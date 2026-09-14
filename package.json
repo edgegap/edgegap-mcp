@@ -1,6 +1,7 @@
 {
   "name": "@edgegap/mcp",
-  "version": "0.1.0",
+  "mcpName": "dev.edgegap/mcp",
+  "version": "0.1.1",
   "description": "Deploy game servers on Edgegap from your coding agent. Runs locally; your API token never leaves your machine.",
   "scripts": {
     "prebuild": "rm -rf dist",
