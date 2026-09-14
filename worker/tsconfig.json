@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "Preserve",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["@cloudflare/workers-types"],
+    "lib": ["ES2022"],
+    "allowImportingTsExtensions": true
+  },
+  "include": ["worker.ts", "../src/**/*.ts"]
+}

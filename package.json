@@ -1,0 +1,51 @@
+{
+  "name": "@edgegap/mcp",
+  "version": "0.1.0",
+  "description": "Deploy game servers on Edgegap from your coding agent. Runs locally; your API token never leaves your machine.",
+  "scripts": {
+    "build": "tsc && chmod +x dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "typecheck:worker": "tsc -p worker/tsconfig.json --noEmit",
+    "test": "node smoke.mjs && node guards.mjs && node elicit.mjs",
+    "worker:dev": "wrangler dev --config worker/wrangler.jsonc --local --port 8787",
+    "worker:check": "wrangler deploy --config worker/wrangler.jsonc --dry-run --outdir=.wrangler/dryrun",
+    "worker:deploy": "wrangler deploy --config worker/wrangler.jsonc",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "edgegap",
+    "game-server",
+    "multiplayer",
+    "unity",
+    "unreal"
+  ],
+  "author": "Mathieu Duperre",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/server": "^2.0.0",
+    "agents": "^0.23.0",
+    "zod": "^4.6.2"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260911.1",
+    "@types/node": "^22.20.2",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.131.1"
+  },
+  "type": "module",
+  "bin": {
+    "edgegap-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "edgegap-mcp",
+  "main": "worker.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // No KV, D1, R2, or Durable Object bindings — on purpose.
+  // The stateless handler needs none, and adding storage here is how a
+  // relay quietly becomes a credential vault. See worker.ts.
+
+  // Observability off: request logging on this Worker would capture
+  // Authorization headers carrying customer API tokens.
+  "observability": { "enabled": false },
+
+  // Do not enable request body logging. Tool arguments and headers on this
+  // Worker carry customer API tokens.
+  "vars": {
+    "EDGEGAP_MAX_DURATION_MINUTES": "60"
+  }
+}
