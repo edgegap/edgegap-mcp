@@ -21,7 +21,7 @@
     "unreal"
   ],
   "author": "Mathieu Duperre",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@modelcontextprotocol/server": "^2.0.0",
