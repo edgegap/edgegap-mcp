@@ -182,6 +182,7 @@ export function registerTools(
         limit: z.number().int().min(1).max(100).optional().describe('Results per page. Default 50.'),
         page: z.number().int().min(1).optional(),
       },
+      annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async ({ limit, page }) =>
       guard(auth, async () => {
@@ -213,6 +214,7 @@ export function registerTools(
             .describe('Application name, 3-64 chars. Usually the game or project name.'),
           is_active: z.boolean().optional().describe('Whether deployments are allowed. Default true.'),
         },
+        annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true },
       },
       async ({ name, is_active }) =>
         guard(auth, async () => {
@@ -243,6 +245,7 @@ export function registerTools(
       inputSchema: {
         application: z.string().describe('Application name, as returned by edgegap_list_apps.'),
       },
+      annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async ({ application }) =>
       guard(auth, async () => {
@@ -319,6 +322,7 @@ export function registerTools(
             .optional()
             .describe('Environment variables injected into the container.'),
         },
+        annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true },
       },
       async (args) =>
         guard(auth, async () => {
@@ -391,6 +395,7 @@ export function registerTools(
           cpu_units: z.number().int().min(256).optional().describe('Override the version CPU.'),
           memory_mb: z.number().int().min(256).optional().describe('Override the version memory.'),
         },
+        annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true },
       },
       async (args) =>
         guard(auth, async () => {
@@ -443,6 +448,7 @@ export function registerTools(
       inputSchema: {
         request_id: z.string().describe('The request_id returned by edgegap_deploy.'),
       },
+      annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async ({ request_id }) =>
       guard(auth, async () => {
@@ -471,6 +477,7 @@ export function registerTools(
           .optional()
           .describe('How long to wait before giving up. Default 180.'),
       },
+      annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
     },
     async ({ request_id, timeout_seconds }) =>
       guard(auth, async () => {
@@ -526,6 +533,7 @@ export function registerTools(
           .describe('Edgegap filter expression, e.g. by tag. Omit for all deployments.'),
         limit: z.number().int().min(1).max(100).optional().describe('Default 50.'),
       },
+      annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async ({ filter, limit }) =>
       guard(auth, async () => {
@@ -554,6 +562,7 @@ export function registerTools(
         inputSchema: {
           request_id: z.string().describe('The request_id of the deployment to stop.'),
         },
+        annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: true },
       },
       async ({ request_id }) =>
         guard(auth, async () => {
@@ -583,6 +592,7 @@ export function registerTools(
           .optional()
           .describe('Truncate logs to this length, keeping the tail. Default 8000.'),
       },
+      annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async ({ request_id, max_characters }) =>
       guard(auth, async () => {
