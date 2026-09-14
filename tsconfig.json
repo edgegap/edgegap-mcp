@@ -8,6 +8,7 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
+    "noEmitOnError": true,
     "types": ["node"],
     "lib": ["ES2022"],
     "declaration": false,
