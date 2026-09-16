@@ -48,7 +48,7 @@ config, nothing to clone, nothing to build.
 ```
 
 Works in Claude Code, Cursor, Codex, and VS Code. Pin a version in production
-(`@edgegap/mcp@0.1.4`) rather than floating on latest.
+(`@edgegap/mcp@0.1.5`) rather than floating on latest.
 
 Registered in the official MCP registry as `dev.edgegap/mcp`.
 
