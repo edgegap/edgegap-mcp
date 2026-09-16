@@ -48,7 +48,7 @@ config, nothing to clone, nothing to build.
 ```
 
 Works in Claude Code, Cursor, Codex, and VS Code. Pin a version in production
-(`@edgegap/mcp@0.1.0`) rather than floating on latest.
+(`@edgegap/mcp@0.1.5`) rather than floating on latest.
 
 Registered in the official MCP registry as `dev.edgegap/mcp`.
 
@@ -112,13 +112,36 @@ Recommended setup, in decreasing order of caution:
 | Situation | Setup |
 | --- | --- |
 | Unattended or autonomous agent | Local mode. Separate non-production organization, plus `EDGEGAP_READ_ONLY=1` |
-| Supervised agent, live game in the org | Local mode. `EDGEGAP_APP_ALLOWLIST` scoped to the app being worked on, plus `EDGEGAP_MAX_DURATION_MINUTES` |
+| Supervised agent, live game in the org | Local mode. `EDGEGAP_APP_ALLOWLIST` scoped to the app being worked on, plus `EDGEGAP_MAX_DURATION_MINUTES`. Read [Scope of the allowlist](#scope-of-the-allowlist) first — deployments that are already running are not covered |
 | Solo developer, no production workload | Either mode. Defaults are fine; revoke the token when finished |
 
 The allowlist and read-only flag are enforced in the local server, which means
 they protect against an agent that makes a mistake, not against one that has
 been compromised into calling the API directly. They narrow the blast radius;
 they do not remove it.
+
+### Scope of the allowlist
+
+`EDGEGAP_APP_ALLOWLIST` is enforced by the four tools that take an application
+name: `edgegap_create_app`, `edgegap_list_app_versions`,
+`edgegap_create_app_version`, and `edgegap_deploy`.
+
+It is **not** enforced by the five tools keyed on `request_id`:
+`edgegap_get_deployment`, `edgegap_wait_for_deployment`,
+`edgegap_list_deployments`, `edgegap_stop_deployment`, and
+`edgegap_get_deployment_logs`. An agent running with an allowlist set can list
+every deployment in the organization and then inspect, read the logs of, or stop
+any of them — including deployments belonging to applications outside the list.
+
+So the allowlist scopes what an agent can **create and deploy into**, not what it
+can **touch once running**. That is narrower than earlier versions of this
+document implied.
+
+For a stronger guarantee today, use `EDGEGAP_READ_ONLY=1`, which never registers
+the five mutating tools at all, or point the agent at a separate non-production
+organization. Both are unaffected by this gap.
+
+Reported by Syed Anas Mohiuddin, September 2026.
 
 ### Environment variables
 
@@ -130,7 +153,7 @@ locally.
 | --- | --- | --- |
 | `EDGEGAP_API_TOKEN` | *(prompted)* | API token. Optional — omit it and the developer is asked at first use. The `token ` prefix is added for you. |
 | `EDGEGAP_READ_ONLY` | `0` | Set to `1` and the five mutating tools are never registered. The agent cannot see them, so it cannot be talked into calling them. |
-| `EDGEGAP_APP_ALLOWLIST` | *(empty)* | Comma-separated application names. When set, every tool refuses to touch anything else. |
+| `EDGEGAP_APP_ALLOWLIST` | *(empty)* | Comma-separated application names. When set, the four application-keyed tools refuse to touch anything else. Does **not** scope the five `request_id`-keyed tools — see [Scope of the allowlist](#scope-of-the-allowlist). |
 | `EDGEGAP_MAX_DURATION_MINUTES` | `60` | Ceiling on `max_duration` the agent may set on a version. Caps runaway cost from an unattended agent. |
 | `EDGEGAP_TIMEOUT_MS` | `30000` | Per-request HTTP timeout. |
 
