@@ -55,6 +55,33 @@ The token lives in one variable in a process on the developer's own machine,
 spawned by their editor, for the life of that editor session. Nothing on disk,
 nothing on Edgegap servers, nothing in logs.
 
+## Why there is no 401 on the transport
+
+The Worker used to reject any request to `/mcp` without an `Authorization`
+header. That was wrong in three ways and has been removed.
+
+A transport 401 means "go authenticate over there". It is only actionable when
+the challenge carries RFC 9728 `resource_metadata` pointing at an authorization
+server. There is none yet, so clients read the challenge, found nothing to
+discover, and displayed **"sign-in: not required"** — accurate, and confusing
+next to a connector that failed on every call.
+
+It also gated discovery. `initialize` and `tools/list` touch no credential and
+expose nothing secret — the tool definitions are in this repo, publicly — yet
+neither worked anonymously, so no client could see what the server does before
+committing a token.
+
+Worst, the check only tested whether the header was *present*. Clients that
+connect by URL alone and have no custom-header field send their own bearer
+token. That satisfied the check, got relayed to `api.edgegap.com`, and came
+back as Edgegap's generic 401 — a dead end for the developer, and an
+org-wide credential relayed on spec.
+
+Now: every request reaches the handler, discovery is anonymous, a foreign-
+looking bearer is recognised and never relayed, and a tool called without a
+usable token fails through `TokenUnavailableError` as readable text in the
+agent's transcript. The "sign-in: not required" badge stays, and is now true.
+
 ## When to revisit
 
 The week Edgegap ships OAuth. At that point `@cloudflare/workers-oauth-provider`
