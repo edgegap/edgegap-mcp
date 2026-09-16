@@ -1,8 +1,8 @@
 # edgegap-mcp
 
-An MCP server that lets a coding agent take a developer from "I have a game
-server container" to "players are connected to it" without the developer
-reading the API reference.
+An MCP server for Edgegap that lets a coding agent take a developer from "I
+have a game server container" to "players are connected to it" without the
+developer reading the API reference.
 
 Ten tools, hand-picked. Not generated from the OpenAPI spec — see
 [Scope](#scope) for why.
@@ -24,6 +24,8 @@ One line in your MCP client config. Nothing to clone, nothing to build.
 
 Works in Claude Code, Cursor, Codex, and VS Code. Pin a version in production
 (`@edgegap/mcp@0.1.0`) rather than floating on latest.
+
+Registered in the official MCP registry as `dev.edgegap/mcp`.
 
 > **Node version:** the server itself needs Node 18+. Deploying the optional
 > Cloudflare Worker needs Node 22+, because `wrangler` requires it.
@@ -94,22 +96,22 @@ do not remove it.
 | `EDGEGAP_MAX_DURATION_MINUTES` | `60` | Ceiling on `max_duration` the agent may set on a version. Caps runaway cost from an unattended agent. |
 | `EDGEGAP_TIMEOUT_MS` | `30000` | Per-request HTTP timeout. |
 
-## The ten tools
+## Tools
 
-Ordered along the golden path.
+Ten tools, listed in the order they fall along the golden path.
 
-| # | Tool | Mutating | What it's for |
-| --- | --- | --- | --- |
-| 1 | `edgegap_list_apps` | | Orient before doing anything. Prevents duplicate applications. |
-| 2 | `edgegap_create_app` | ● | Create the container for versions. |
-| 3 | `edgegap_list_app_versions` | | Find a deployable version, or copy settings from a working one. |
-| 4 | `edgegap_create_app_version` | ● | Register a container image with CPU, memory, and ports. |
-| 5 | `edgegap_deploy` | ● | Start one instance near specified players. |
-| 6 | `edgegap_get_deployment` | | Single status read. |
-| 7 | `edgegap_wait_for_deployment` | | Poll to ready with backoff, then return the connection address. |
-| 8 | `edgegap_list_deployments` | | Find orphaned servers from earlier sessions. |
-| 9 | `edgegap_stop_deployment` | ● | Graceful SIGTERM, one deployment at a time. |
-| 10 | `edgegap_get_deployment_logs` | | Container output and crash exit code after a failure. |
+| Tool | Mutating | What it's for |
+| --- | --- | --- |
+| `edgegap_list_apps` | | Orient before doing anything. Prevents duplicate applications. |
+| `edgegap_create_app` | ● | Create the container for versions. |
+| `edgegap_list_app_versions` | | Find a deployable version, or copy settings from a working one. |
+| `edgegap_create_app_version` | ● | Register a container image with CPU, memory, and ports. |
+| `edgegap_deploy` | ● | Start one instance near specified players. |
+| `edgegap_get_deployment` | | Single status read. |
+| `edgegap_wait_for_deployment` | | Poll to ready with backoff, then return the connection address. |
+| `edgegap_list_deployments` | | Find orphaned servers from earlier sessions. |
+| `edgegap_stop_deployment` | ● | Graceful SIGTERM, one deployment at a time. |
+| `edgegap_get_deployment_logs` | | Container output and crash exit code after a failure. |
 
 ## Design decisions
 
