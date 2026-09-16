@@ -72,7 +72,15 @@ function guard(
 function errorHint(err: EdgegapApiError): string | undefined {
   switch (err.status) {
     case 401:
-      return 'the token was rejected. It has been discarded; the next call will ask for a new one.';
+      // Deliberately does not promise a re-prompt: the local server asks again
+      // on the next call, the hosted relay cannot, and a hint that lies about
+      // what happens next sends the developer looking in the wrong place.
+      return (
+        'Edgegap rejected the token. It may be expired, revoked, or from a ' +
+        'different organization. Check it at ' +
+        'https://app.edgegap.com/user-settings?tab=tokens. The token has been ' +
+        'discarded from this session.'
+      );
     case 404:
       return 'the application or version name does not exist. Call edgegap_list_apps first.';
     case 409:
