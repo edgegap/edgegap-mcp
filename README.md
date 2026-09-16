@@ -9,7 +9,32 @@ Ten tools, hand-picked. Not generated from the OpenAPI spec — see
 
 ## Install
 
-One line in your MCP client config. Nothing to clone, nothing to build.
+Two ways to run it. Pick based on how much you care about where your token
+goes — see [Where your token goes](#where-your-token-goes).
+
+### Remote endpoint
+
+Hosted by Edgegap as a Cloudflare Worker. Nothing to install.
+
+```json
+{
+  "mcpServers": {
+    "edgegap": {
+      "type": "http",
+      "url": "https://mcp.edgegap.dev/mcp",
+      "headers": { "Authorization": "token YOUR_API_TOKEN" }
+    }
+  }
+}
+```
+
+Also works as a custom connector in claude.ai: add
+`https://mcp.edgegap.dev/mcp` and supply the same token.
+
+### Local
+
+Runs on your own machine, spawned by your editor. One line in your MCP client
+config, nothing to clone, nothing to build.
 
 ```json
 {
@@ -27,15 +52,16 @@ Works in Claude Code, Cursor, Codex, and VS Code. Pin a version in production
 
 Registered in the official MCP registry as `dev.edgegap/mcp`.
 
-> **Node version:** the server itself needs Node 18+. Deploying the optional
-> Cloudflare Worker needs Node 22+, because `wrangler` requires it.
+> **Node version:** the local server needs Node 18+. Deploying your own copy of
+> the Cloudflare Worker needs Node 22+, because `wrangler` requires it.
 
-## Your token never leaves your machine
+## Where your token goes
 
-There is no Edgegap-hosted component. This server runs as a process on your
-own computer, spawned by your editor. The first tool call asks you for a token,
-shows what it authorises, and requires an explicit acknowledgement before
-accepting it. Where that token then lives, exhaustively:
+This differs by mode, and the difference is the reason both modes exist.
+
+**Local.** The server runs as a process on your own computer. The first tool
+call asks you for a token, shows what it authorises, and requires an explicit
+acknowledgement before accepting it. Where that token then lives, exhaustively:
 
 - one variable in that process's memory, for the life of your editor session
 
@@ -44,18 +70,24 @@ any Edgegap server — the only thing sent to Edgegap is the API call itself,
 exactly as if you had run `curl`. Closing your editor revokes this server's
 access completely.
 
+**Remote.** Your token is sent to `mcp.edgegap.dev` on every request and
+forwarded from there to the Edgegap API. It transits infrastructure Edgegap
+operates. The worker holds it for the life of the request and does not persist
+it, but that is a "we don't store it" claim rather than a "we never see it"
+claim. The two are different, and only local mode makes the second one.
+
 Generate a token at <https://app.edgegap.com/user-settings?tab=tokens>.
 
-Setting `EDGEGAP_API_TOKEN` still works and takes precedence, for CI and for
-clients that cannot show prompts. Do not pass a token as a command-line
-argument — arguments are visible to other processes via `ps`, and the server
-warns if it detects one.
+In local mode, setting `EDGEGAP_API_TOKEN` takes precedence over the prompt,
+for CI and for clients that cannot show prompts. Do not pass a token as a
+command-line argument — arguments are visible to other processes via `ps`, and
+the server warns if it detects one.
 
-**Why this is not hosted.** A hosted server would have to either store your
-token or receive it on every request. "We don't store it" and "we never see it"
-are different claims, and only a local process makes the second one. See
-`worker/DECISION.md` for the full reasoning and the conditions under which a
-hosted version becomes worth building.
+**Which to use.** Remote for a first try, a demo, or a supervised session where
+setup friction matters more than custody. Local for anything unattended,
+anything in an organization with a live game in it, and anything where you
+would rather not extend trust you don't have to. The guardrails described below
+exist only in local mode.
 
 ## Read this before connecting an agent
 
@@ -72,21 +104,27 @@ Consequences worth being deliberate about:
 - Anything the agent logs, echoes, or sends to a model provider is a place the
   token could end up. This server does not log it, but it cannot control what
   the rest of the agent does.
+- On the remote endpoint, the same unscoped token is additionally handled by
+  Edgegap's worker on every call.
 
 Recommended setup, in decreasing order of caution:
 
 | Situation | Setup |
 | --- | --- |
-| Unattended or autonomous agent | Separate non-production organization, plus `EDGEGAP_READ_ONLY=1` |
-| Supervised agent, live game in the org | `EDGEGAP_APP_ALLOWLIST` scoped to the app being worked on, plus `EDGEGAP_MAX_DURATION_MINUTES` |
-| Solo developer, no production workload | Defaults are fine; revoke the token when finished |
+| Unattended or autonomous agent | Local mode. Separate non-production organization, plus `EDGEGAP_READ_ONLY=1` |
+| Supervised agent, live game in the org | Local mode. `EDGEGAP_APP_ALLOWLIST` scoped to the app being worked on, plus `EDGEGAP_MAX_DURATION_MINUTES` |
+| Solo developer, no production workload | Either mode. Defaults are fine; revoke the token when finished |
 
-The allowlist and read-only flag are enforced in this server, which means they
-protect against an agent that makes a mistake, not against one that has been
-compromised into calling the API directly. They narrow the blast radius; they
-do not remove it.
+The allowlist and read-only flag are enforced in the local server, which means
+they protect against an agent that makes a mistake, not against one that has
+been compromised into calling the API directly. They narrow the blast radius;
+they do not remove it.
 
 ### Environment variables
+
+These configure the local server. On the remote endpoint they are set by
+Edgegap and cannot be changed per developer — if you need any of them, run
+locally.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -98,7 +136,8 @@ do not remove it.
 
 ## Tools
 
-Ten tools, listed in the order they fall along the golden path.
+Ten tools, listed in the order they fall along the golden path. The same ten in
+both modes.
 
 | Tool | Mutating | What it's for |
 | --- | --- | --- |
@@ -137,6 +176,13 @@ player location are caught here rather than surfacing as an opaque 400.
 There is no bulk-stop tool, because an agent with a filter expression and a bug
 can stop a production fleet.
 
+**Both a hosted endpoint and a local package.** The hosted endpoint removes
+every step between finding this server and calling a tool, which is where most
+developers drop out. The local package is the only way to run the server
+without extending custody of an unscoped token to a third party, including us.
+Neither one dominates the other, so both ship. See `worker/DECISION.md` for the
+longer version.
+
 ## Scope
 
 Not exposed, on purpose: matchmaking, relays, private fleets, smart fleets,
@@ -148,6 +194,9 @@ the platform, not to a developer deploying their first server. Adding them
 would trade the conversion path for surface area.
 
 ## Known limitation: asking for the token at all
+
+This applies to local mode, where the token is collected through elicitation
+rather than read from config.
 
 The MCP specification says servers should not use elicitation to collect
 sensitive data, and an API token is sensitive. This server does it anyway,
@@ -161,9 +210,10 @@ plain-language disclosure, required acknowledgement, redaction from all output,
 and the environment variable always winning when present. Removing any of them
 breaks the trade.
 
-The real fix is on Edgegap's side: scoped, revocable, deploy-only credentials,
-issued through OAuth rather than pasted as a secret. Until those exist, the
-interactive prompt is a workaround and is labelled as one in the code.
+The real fix is on Edgegap's side and would improve both modes: scoped,
+revocable, deploy-only credentials, issued through OAuth rather than pasted as
+a secret. Until those exist, the interactive prompt is a workaround and is
+labelled as one in the code.
 
 ## Development
 
