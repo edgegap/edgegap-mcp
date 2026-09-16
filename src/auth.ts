@@ -234,14 +234,21 @@ export class TokenProvider implements TokenSource {
   }
 }
 
-/**
- * Credential source for the hosted Worker: the token arrives on the request
- * and lives only as long as this object, which is created per request and
- * garbage collected with it. Nothing is cached across requests, deliberately.
- */
 export class StaticTokenProvider implements TokenSource {
   private used = false;
-  constructor(private token: string | undefined) {}
+
+  /**
+   * @param token          credential for this request, if the caller found a usable one
+   * @param unavailableMessage  what to tell the agent when it calls a tool and
+   *   there is no token. The transport knows WHY the token is missing — absent
+   *   header, or a header carrying some other client's credential — and that
+   *   distinction is the whole difference between a developer who can fix their
+   *   setup and one staring at a generic 401. Defaults to the generic text.
+   */
+  constructor(
+    private token: string | undefined,
+    private readonly unavailableMessage?: string
+  ) {}
 
   get current(): string | undefined {
     return this.token;
@@ -250,8 +257,9 @@ export class StaticTokenProvider implements TokenSource {
   async get(): Promise<string> {
     if (!this.token) {
       throw new TokenUnavailableError(
-        'No Edgegap API token on this request. Send it as an Authorization ' +
-          'header on the MCP connection.'
+        this.unavailableMessage ??
+          'No Edgegap API token on this request. Send it as an Authorization ' +
+            'header on the MCP connection.'
       );
     }
     return this.token;
