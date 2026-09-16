@@ -6,3 +6,4 @@ node_modules/
 .DS_Store
 .dev.vars
 server.json
+package.json package-lock.json
