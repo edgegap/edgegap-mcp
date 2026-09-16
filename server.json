@@ -1,0 +1,51 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "dev.edgegap/mcp",
+  "title": "Edgegap",
+  "description": "Deploy and operate multiplayer game servers on Edgegap's global edge network.",
+  "version": "0.1.4",
+  "repository": {
+    "url": "https://github.com/edgegap/edgegap-mcp",
+    "source": "github"
+  },
+  "websiteUrl": "https://edgegap.com",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@edgegap/mcp",
+      "version": "0.1.4",
+      "transport": { "type": "stdio" },
+      "environmentVariables": [
+        {
+          "name": "EDGEGAP_API_TOKEN",
+          "description": "Edgegap API token. Optional — omit it and you're prompted at first use.",
+          "isRequired": false,
+          "isSecret": true,
+          "format": "string"
+        }
+      ]
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.edgegap.dev/mcp",
+      "headers": [
+        {
+          "name": "Authorization",
+          "description": "Edgegap API token (organization-wide; cannot be scoped to one application).",
+          "value": "Bearer {token}",
+          "isRequired": true,
+          "isSecret": true,
+          "variables": {
+            "token": {
+              "description": "Generate at https://app.edgegap.com/user-settings?tab=tokens",
+              "isRequired": true,
+              "isSecret": true
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
