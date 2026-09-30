@@ -2,9 +2,10 @@
 /**
  * Edgegap MCP server.
  *
- * Exposes ten curated tools covering the path from "I have a game server
- * container" to "players are connected to it", so a coding agent can take a
- * developer through it without the developer reading the API reference.
+ * Exposes curated tools covering the path from "I have a headless server
+ * build" to "players are connected to it" — Dockerfile checks, registry push,
+ * deploy, relays for peer-to-peer games, and a matchmaker config — so a coding
+ * agent can take a developer through it without reading the API reference.
  *
  * Transport is stdio, which is what Claude Code, Cursor, Codex and VS Code use
  * for locally configured servers.
@@ -31,20 +32,28 @@ async function main(): Promise<void> {
   }
 
   const server = new McpServer(
-    { name: 'edgegap', version: '0.1.0' },
+    { name: 'edgegap', version: '0.2.0' },
     {
       instructions:
-        'Deploy and operate game servers on Edgegap.\n\n' +
-        'Golden path for a first deployment:\n' +
-        '1. edgegap_list_apps to see what already exists\n' +
-        '2. edgegap_create_app if no suitable application is there\n' +
-        '3. edgegap_create_app_version to register the container image\n' +
-        '4. edgegap_deploy to start an instance near the players\n' +
-        '5. edgegap_wait_for_deployment to get the connection address\n' +
-        '6. edgegap_stop_deployment when finished\n\n' +
-        'Deployments cost money while running. Tag test deployments and stop ' +
-        'them before ending the task. If a deployment errors, read the container ' +
-        'logs before redeploying.\n\n' +
+        'Host multiplayer games on Edgegap: dedicated servers, or relays for peer-to-peer.\n\n' +
+        'Pick the path first. Peer-to-peer and host-client games (common for co-op) need no ' +
+        "server image: call edgegap_create_relay_session with the players' public IPs and " +
+        'configure the relay transport with what it returns. Dedicated-server games follow ' +
+        'the golden path below.\n\n' +
+        'Golden path for a first dedicated-server deployment:\n' +
+        '1. edgegap_validate_server_config on the Dockerfile and ports, before building\n' +
+        '2. edgegap_get_registry_credentials, then docker build --platform linux/amd64 and push\n' +
+        '3. edgegap_list_registry_tags to confirm the push landed\n' +
+        '4. edgegap_list_apps, then edgegap_create_app if no suitable application exists\n' +
+        '5. edgegap_create_app_version to register the image\n' +
+        '6. edgegap_deploy to start an instance near the players\n' +
+        '7. edgegap_wait_for_deployment to get the connection address\n' +
+        '8. edgegap_stop_deployment when finished\n' +
+        'To match players into those servers, edgegap_build_matchmaker_config produces the ' +
+        'config the developer uploads in the dashboard.\n\n' +
+        'Deployments and relay sessions cost money while running. Tag test deployments, and ' +
+        'stop deployments and delete relay sessions you created before ending the task. If a ' +
+        'deployment errors, read the container logs before redeploying.\n\n' +
         'Credentials: if no token was configured, the first tool call asks the ' +
         'developer for one. That token is org-wide and cannot be scoped by ' +
         'Edgegap, so it authorises far more than any single task needs. Treat it ' +

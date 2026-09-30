@@ -23,7 +23,7 @@ If everything is already installed, it is steps 7 and 8 — two commands.
 
 Every command here was run against the actual code in this repo. The Worker
 bundles at 1.2 MiB (213 KiB gzipped), well inside Workers limits, and serves
-all ten tools over Streamable HTTP.
+all eighteen tools over Streamable HTTP.
 
 Read `DECISION.md` first if you have not. Short version of the trade: tokens
 transit Edgegap infrastructure on this path and do not on the local one.
@@ -95,11 +95,6 @@ In another terminal:
 curl http://127.0.0.1:8787/health
 # → ok
 
-# Auth gate
-curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8787/mcp \
-  -H 'Content-Type: application/json' -d '{}'
-# → 401
-
 # Full handshake (all four headers matter — Accept must include
 # text/event-stream or the response body comes back empty)
 curl -X POST http://127.0.0.1:8787/mcp \
@@ -118,7 +113,7 @@ curl -X POST http://127.0.0.1:8787/mcp \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
 ```
 
-You should see ten `edgegap_*` tools.
+You should see eighteen `edgegap_*` tools.
 
 A harmless warning about `Request.cf` appears under `wrangler dev --local`. It
 is a local-emulation artifact and does not occur when deployed.
@@ -129,7 +124,7 @@ is a local-emulation artifact and does not occur when deployed.
 npm run worker:check
 ```
 
-Expect `Total Upload: ~1232 KiB / gzip: ~213 KiB` and `--dry-run: exiting now.`
+Expect `Total Upload: ~1276 KiB / gzip: ~226 KiB` and `--dry-run: exiting now.`
 Nothing is published.
 
 ## 7. Log in to Cloudflare
@@ -188,7 +183,7 @@ Set in `wrangler.jsonc` under `vars`, or per environment:
 
 | Variable | Effect |
 | --- | --- |
-| `EDGEGAP_READ_ONLY` | `"1"` serves only the six read-only tools. Sensible default for a public demo endpoint. |
+| `EDGEGAP_READ_ONLY` | `"1"` serves only the ten read-only tools. Sensible default for a public demo endpoint. |
 | `EDGEGAP_APP_ALLOWLIST` | Comma-separated app names the server will touch. |
 | `EDGEGAP_MAX_DURATION_MINUTES` | Ceiling on deployment auto-stop. Default 60. |
 

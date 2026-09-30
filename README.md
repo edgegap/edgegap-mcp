@@ -1,11 +1,13 @@
 # edgegap-mcp
 
 An MCP server for Edgegap that lets a coding agent take a developer from "I
-have a game server container" to "players are connected to it" without the
-developer reading the API reference.
+have a headless server build" to "players are connected to it" without the
+developer reading the API reference: checking the Dockerfile and ports, pushing
+to Edgegap's registry, deploying, and — for peer-to-peer games — opening a relay
+instead.
 
-Ten tools, hand-picked. Not generated from the OpenAPI spec — see
-[Scope](#scope) for why.
+Eighteen tools, hand-picked. Not generated from the OpenAPI spec — see
+[Design decisions](#design-decisions) for why.
 
 ## Install
 
@@ -122,9 +124,13 @@ they do not remove it.
 
 ### Scope of the allowlist
 
-`EDGEGAP_APP_ALLOWLIST` is enforced by the four tools that take an application
+`EDGEGAP_APP_ALLOWLIST` is enforced by the five tools that take an application
 name: `edgegap_create_app`, `edgegap_list_app_versions`,
-`edgegap_create_app_version`, and `edgegap_deploy`.
+`edgegap_create_app_version`, `edgegap_deploy`, and
+`edgegap_build_matchmaker_config`.
+
+Relay sessions and the container registry belong to the organization, not to an
+application, so the relay and registry tools are not covered by it either.
 
 It is **not** enforced by the five tools keyed on `request_id`:
 `edgegap_get_deployment`, `edgegap_wait_for_deployment`,
@@ -138,7 +144,7 @@ can **touch once running**. That is narrower than earlier versions of this
 document implied.
 
 For a stronger guarantee today, use `EDGEGAP_READ_ONLY=1`, which never registers
-the five mutating tools at all, or point the agent at a separate non-production
+the mutating tools at all, or point the agent at a separate non-production
 organization. Both are unaffected by this gap.
 
 Reported by Syed Anas Mohiuddin, September 2026.
@@ -152,15 +158,26 @@ locally.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `EDGEGAP_API_TOKEN` | *(prompted)* | API token. Optional — omit it and the developer is asked at first use. The `token ` prefix is added for you. |
-| `EDGEGAP_READ_ONLY` | `0` | Set to `1` and the five mutating tools are never registered. The agent cannot see them, so it cannot be talked into calling them. |
-| `EDGEGAP_APP_ALLOWLIST` | *(empty)* | Comma-separated application names. When set, the four application-keyed tools refuse to touch anything else. Does **not** scope the five `request_id`-keyed tools — see [Scope of the allowlist](#scope-of-the-allowlist). |
+| `EDGEGAP_READ_ONLY` | `0` | Set to `1` and the eight mutating tools (●, below) are never registered. The agent cannot see them, so it cannot be talked into calling them. |
+| `EDGEGAP_APP_ALLOWLIST` | *(empty)* | Comma-separated application names. When set, the five application-keyed tools refuse to touch anything else. Does **not** scope the five `request_id`-keyed tools — see [Scope of the allowlist](#scope-of-the-allowlist). |
 | `EDGEGAP_MAX_DURATION_MINUTES` | `60` | Ceiling on `max_duration` the agent may set on a version. Caps runaway cost from an unattended agent. |
 | `EDGEGAP_TIMEOUT_MS` | `30000` | Per-request HTTP timeout. |
 
 ## Tools
 
-Ten tools, listed in the order they fall along the golden path. The same ten in
-both modes.
+Eighteen tools, grouped by where they fall on the path. The same set in both
+modes; `EDGEGAP_READ_ONLY=1` hides the ● ones.
+
+**Before the first deploy** — getting a headless build into a correct image and
+into a registry, which is where agent-driven onboarding actually stalls.
+
+| Tool | Mutating | What it's for |
+| --- | --- | --- |
+| `edgegap_validate_server_config` | | Static check of a Dockerfile, ports, resources and tag against Edgegap's requirements: linux/amd64, Unreal not running as root, Unity `-batchmode -nographics`, loopback binds, EXPOSE vs. version ports, protocol vs. netcode transport, `latest` tags. Returns Edgegap's reference Unity/Unreal Dockerfile when there is none yet or it fails. No API call. |
+| `edgegap_get_registry_credentials` | ● | Push credentials for the org's private `registry.edgegap.com` project, plus the exact login/build/push commands and the values to pass to `edgegap_create_app_version`. Provisions the project on first use. |
+| `edgegap_list_registry_tags` | | Confirm a pushed tag landed before registering it. |
+
+**Dedicated servers** — the original golden path.
 
 | Tool | Mutating | What it's for |
 | --- | --- | --- |
@@ -175,12 +192,29 @@ both modes.
 | `edgegap_stop_deployment` | ● | Graceful SIGTERM, one deployment at a time. |
 | `edgegap_get_deployment_logs` | | Container output and crash exit code after a failure. |
 
+**Peer-to-peer relays** — for co-op and host-client games, which need no server
+image at all.
+
+| Tool | Mutating | What it's for |
+| --- | --- | --- |
+| `edgegap_create_relay_session` | ● | Open a relay session for a set of player IPs, wait until it is ready, and return the relay address, ports, and per-player authorization tokens. |
+| `edgegap_get_relay_session` | | Re-read a session. |
+| `edgegap_authorize_relay_user` | ● | Add a player who joins after the session was created. |
+| `edgegap_delete_relay_session` | ● | Close a session. |
+
+**Matchmaking**
+
+| Tool | Mutating | What it's for |
+| --- | --- | --- |
+| `edgegap_build_matchmaker_config` | | Generate a basic matchmaker configuration (teams, team size, optional latency rule and expansions) checked against the application version it deploys. Edgegap has no API for creating a matchmaker, so the developer uploads the result in the dashboard. |
+
 ## Design decisions
 
 **Curated, not generated.** The Edgegap API has roughly sixty operations.
 Auto-generating one tool per operation puts all sixty descriptions into the
-agent's context on every turn and measurably degrades tool selection. These ten
-cover the path that converts a new developer.
+agent's context on every turn and measurably degrades tool selection. These
+cover the path that converts a new developer — including the steps before the
+first deploy, which are where that path used to end.
 
 **`wait_for_deployment` is a tool, not a loop.** Left to itself an agent will
 call a status endpoint in a tight loop, burn turns, and give up early. Folding
@@ -194,6 +228,19 @@ round trip to the human.
 
 **Local validation before the wire.** The memory-to-CPU ratio and the missing
 player location are caught here rather than surfacing as an opaque 400.
+`edgegap_validate_server_config` extends this to the image itself, before a
+build and push are spent discovering a problem.
+
+**The registry token is handed to the agent; the API token never is.** The agent
+has to run `docker login`, so the registry token is returned in the tool result.
+It is scoped to the org's registry project, and the returned command reads it
+from an environment variable over `--password-stdin` so it stays off command
+lines and out of shell history. The tool is hidden in read-only mode.
+
+**The registry credentials endpoint is not in the public spec.** It is
+`GET /v1/wizard/registry-credentials`, the same call the Unity plugin makes,
+preceded by `POST /v1/wizard/init-quick-start` when the project is not yet
+provisioned.
 
 **Bulk operations are deliberately absent.** `stop` takes one `request_id`.
 There is no bulk-stop tool, because an agent with a filter expression and a bug
@@ -208,13 +255,14 @@ longer version.
 
 ## Scope
 
-Not exposed, on purpose: matchmaking, relays, private fleets, smart fleets,
-endpoint storage, ACL/whitelist entries, deployment tags, metrics, container
-registry management, DNS configuration.
+Not exposed, on purpose: private fleets, smart fleets, endpoint storage,
+ACL/whitelist entries, deployment tags, metrics, registry tag deletion, DNS
+configuration, and matchmaker lifecycle (start, stop, delete).
 
-These are real capabilities, but they belong to studios already operating on
-the platform, not to a developer deploying their first server. Adding them
-would trade the conversion path for surface area.
+These belong to studios already operating on the platform, not to a developer
+getting a first game online. Relays, registry push, and a basic matchmaker
+config were moved in scope because agents hit them before the first deploy,
+not after.
 
 ## Known limitation: asking for the token at all
 
@@ -245,9 +293,11 @@ npm run typecheck
 node smoke.mjs      # handshake, tool registration, read-only mode
 node guards.mjs     # local validation and allowlist enforcement
 node elicit.mjs     # token prompt: accept, refuse acknowledgement, decline, no support
+node newtools.mjs   # validator, registry, relay, matchmaker tools against a local mock API
 ```
 
-None of these make network calls. `elicit.mjs` asserts that the prompt states
+None of these reach Edgegap. `newtools.mjs` points `EDGEGAP_BASE_URL` at a
+mock server on localhost. `elicit.mjs` asserts that the prompt states
 the org-wide scope, that the acknowledgement is required, that the token never
 appears in tool output, and that declining produces a stop-and-report message
 rather than a retry loop.

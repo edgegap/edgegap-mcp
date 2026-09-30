@@ -165,6 +165,64 @@ export class EdgegapClient {
       { query: { format } }
     );
   }
+
+  // --- Container registry -------------------------------------------------
+
+  /**
+   * Push credentials for the organization's project on registry.edgegap.com.
+   * Not in the published OpenAPI spec: this is the endpoint the Unity plugin
+   * uses, and it can fail until init-quick-start has provisioned the project.
+   */
+  getRegistryCredentials() {
+    return this.request<RegistryCredentials>('GET', 'v1', '/v1/wizard/registry-credentials');
+  }
+
+  /** Provisions the registry project if needed. Idempotent; returns 204. */
+  initQuickStart(source: string) {
+    return this.request<unknown>('POST', 'v1', '/v1/wizard/init-quick-start', { body: { source } });
+  }
+
+  /** imageName is "<project>/<image>"; the slash is part of the route. */
+  listRegistryTags(imageName: string, query: { page?: number; limit?: number } = {}) {
+    const path = imageName.split('/').map(encodeURIComponent).join('/');
+    return this.request<RegistryTagsResponse>(
+      'GET',
+      'v1',
+      `/v1/container-registry/images/${path}/tags`,
+      { query }
+    );
+  }
+
+  // --- Relays -------------------------------------------------------------
+
+  createRelaySession(body: { users: Array<{ ip: string }>; webhook_url?: string }) {
+    return this.request<RelaySession>('POST', 'v1', '/v1/relays/sessions', { body });
+  }
+
+  getRelaySession(sessionId: string) {
+    return this.request<RelaySession>(
+      'GET',
+      'v1',
+      `/v1/relays/sessions/${encodeURIComponent(sessionId)}`
+    );
+  }
+
+  authorizeRelayUser(body: { session_id: string; user_ip: string }) {
+    return this.request<RelaySession & { session_user?: RelaySessionUser }>(
+      'POST',
+      'v1',
+      '/v1/relays/sessions:authorize-user',
+      { body }
+    );
+  }
+
+  deleteRelaySession(sessionId: string) {
+    return this.request<unknown>(
+      'DELETE',
+      'v1',
+      `/v1/relays/sessions/${encodeURIComponent(sessionId)}`
+    );
+  }
 }
 
 // --- Response shapes (only the fields the tools actually surface) ----------
@@ -235,6 +293,51 @@ export interface ListDeploymentsResponse {
     tags?: string[];
   }>;
   total_count?: number;
+}
+
+export interface RegistryCredentials {
+  registry_url?: string;
+  project?: string;
+  username?: string;
+  token?: string;
+}
+
+export interface RegistryTagsResponse {
+  data?: Array<{
+    tag: string;
+    last_push_at: string;
+    artifact?: { image_hash?: string; size_mb?: number; artifact_deleted?: boolean };
+  }>;
+  total_count?: number;
+}
+
+export interface RelayPort {
+  port?: number;
+  protocol?: string;
+  link?: string;
+}
+
+export interface RelaySessionUser {
+  ip_address?: string;
+  latitude?: number;
+  longitude?: number;
+  authorization_token?: number;
+}
+
+export interface RelaySession {
+  session_id: string;
+  authorization_token?: number;
+  status?: string;
+  ready?: boolean;
+  linked?: boolean;
+  error?: string | null;
+  session_users?: RelaySessionUser[];
+  relay?: {
+    ip?: string;
+    host?: string;
+    ports?: { server?: RelayPort; client?: RelayPort };
+  } | null;
+  webhook_url?: string | null;
 }
 
 export interface DeploymentLogs {
