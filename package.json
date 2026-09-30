@@ -1,14 +1,14 @@
 {
   "name": "@edgegap/mcp",
   "mcpName": "dev.edgegap/mcp",
-  "version": "0.1.4",
-  "description": "Deploy game servers on Edgegap from your coding agent. Runs locally; your API token never leaves your machine.",
+  "version": "0.2.0",
+  "description": "Check, push, and deploy game servers on Edgegap from your coding agent, with relays for P2P games. Runs locally; your API token never leaves your machine.",
   "scripts": {
     "prebuild": "rm -rf dist",
     "build": "tsc && chmod +x dist/index.js",
     "typecheck": "tsc --noEmit",
     "typecheck:worker": "tsc -p worker/tsconfig.json --noEmit",
-    "test": "node smoke.mjs && node guards.mjs && node elicit.mjs",
+    "test": "node smoke.mjs && node guards.mjs && node elicit.mjs && node newtools.mjs",
     "worker:dev": "wrangler dev --config worker/wrangler.jsonc --local --port 8787",
     "worker:check": "wrangler deploy --config worker/wrangler.jsonc --dry-run --outdir=.wrangler/dryrun",
     "worker:deploy": "wrangler deploy --config worker/wrangler.jsonc",

@@ -1,5 +1,7 @@
 /**
- * The ten golden-path tools.
+ * The golden-path tools: getting a server image right and into a registry,
+ * deploying it, and the two things players need around it — a relay for
+ * peer-to-peer games and a matchmaker config for dedicated ones.
  *
  * Tool descriptions are written for a coding agent, not a human reading docs.
  * Each one says when to reach for it and what to call next, because the main
@@ -8,9 +10,16 @@
 
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { EdgegapClient, EdgegapApiError, DeploymentStatus } from './client.js';
+import { EdgegapClient, EdgegapApiError, DeploymentStatus, RelaySession } from './client.js';
 import { Config, assertAppAllowed, redact } from './config.js';
 import { TokenSource, TokenUnavailableError } from './auth.js';
+import {
+  validateServerConfig,
+  REFERENCE_DOCKERFILES,
+  PROTOCOLS,
+  NETCODE_NAMES,
+} from './serverconfig.js';
+import { buildMatchmakerConfig, DASHBOARD_URL } from './matchmaker.js';
 
 /** 1x1 transparent PNG. The create-app endpoint requires an image and agents
  *  have no sensible one to supply; a placeholder beats a blocked flow. */
@@ -280,7 +289,8 @@ export function registerTools(
         title: 'Create an application version',
         description:
           'Register a container image as a deployable version of an application. The image must ' +
-          'already be pushed to a registry that Edgegap can pull from. Resource units: 1024 cpu ' +
+          'already be pushed to a registry that Edgegap can pull from (see ' +
+          'edgegap_get_registry_credentials and edgegap_list_registry_tags). Resource units: 1024 cpu ' +
           'units = 1 vCPU; memory_mb must be at least 256 and at most double the cpu units. ' +
           'Set verify_image true on the first version so a bad image fails here rather than at ' +
           'deploy time. Avoid the "latest" docker tag — use a build ID so deployments are reproducible.',
@@ -304,7 +314,7 @@ export function registerTools(
                 port: z.number().int().min(1).max(59999).describe('Port the server listens on.'),
                 protocol: z
                   .string()
-                  .describe('UDP, TCP, WS, or HTTP. Most game servers use UDP.'),
+                  .describe(`One of ${PROTOCOLS.join(', ')}. Most game servers use UDP.`),
                 name: z.string().optional().describe('Label, e.g. "gameport".'),
                 to_check: z
                   .boolean()
@@ -620,4 +630,457 @@ export function registerTools(
         });
       })
   );
+
+  // ============================================= before the first deploy ====
+
+  // --------------------------------------------------------------- 11 ----
+  // Pure text analysis: no token, no network, so it is always registered and
+  // never goes through guard().
+  server.registerTool(
+    'edgegap_validate_server_config',
+    {
+      title: 'Validate a game server Dockerfile and port config',
+      description:
+        'Check a game server Dockerfile and the ports/resources you intend to register against ' +
+        'what Edgegap requires, BEFORE building and pushing. Catches the failures that otherwise ' +
+        'only show up after a build, push, version and deploy: ARM or Windows images (Edgegap ' +
+        'runs linux/amd64), Unreal running as root, missing Unity -batchmode -nographics, a ' +
+        'server bound to localhost, EXPOSE ports that do not match the version ports, a protocol ' +
+        'that does not match the netcode transport, the "latest" tag, and bad CPU/memory ratios. ' +
+        'Pass the Dockerfile text (read it from disk first). With no Dockerfile and an engine of ' +
+        'unity or unreal, returns Edgegap\'s reference Dockerfile to start from. Makes no API calls.',
+      inputSchema: {
+        dockerfile: z.string().optional().describe('Full text of the Dockerfile.'),
+        engine: z
+          .enum(['unity', 'unreal', 'godot', 'other'])
+          .optional()
+          .describe('Game engine. Detected from the Dockerfile when omitted.'),
+        netcode: z
+          .string()
+          .optional()
+          .describe(`Networking transport, to check the port protocol. Known: ${NETCODE_NAMES.join(', ')}.`),
+        ports: z
+          .array(
+            z.object({
+              port: z.number().int(),
+              protocol: z.string(),
+              name: z.string().optional(),
+            })
+          )
+          .optional()
+          .describe('Ports you plan to pass to edgegap_create_app_version.'),
+        cpu_units: z.number().int().optional(),
+        memory_mb: z.number().int().optional(),
+        docker_repository: z.string().optional(),
+        docker_image: z.string().optional(),
+        docker_tag: z.string().optional(),
+      },
+      annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    async (args) => {
+      const { engine, errors, warnings } = validateServerConfig(args);
+      const reference = REFERENCE_DOCKERFILES[engine];
+      const wantReference = reference && (args.dockerfile === undefined || errors.length > 0);
+      const verdict = errors.length > 0 ? 'fail' : warnings.length > 0 ? 'pass_with_warnings' : 'pass';
+
+      return ok({
+        verdict,
+        engine,
+        errors,
+        warnings,
+        checked: {
+          dockerfile: args.dockerfile !== undefined,
+          ports: args.ports !== undefined,
+          resources: args.cpu_units !== undefined || args.memory_mb !== undefined,
+          image: args.docker_tag !== undefined || args.docker_image !== undefined,
+        },
+        reference_dockerfile: wantReference ? reference : undefined,
+        next_step:
+          verdict === 'fail'
+            ? 'Fix every error and call this again before building. Do not build or push an image that fails here.'
+            : 'Build with "docker build --platform linux/amd64 -t <image>:<unique-tag> ." and run it ' +
+              'locally with the same port mapping to confirm it starts. Then push it; ' +
+              'edgegap_get_registry_credentials gives you a registry and the exact commands.',
+      });
+    }
+  );
+
+  // --------------------------------------------------------------- 12 ----
+  // Mutating-only: it can provision the registry project, and it hands a
+  // secret to the agent. A read-only session has no business receiving one.
+  if (mutating) {
+    server.registerTool(
+      'edgegap_get_registry_credentials',
+      {
+        title: 'Get Edgegap container registry push credentials',
+        description:
+          'Return the registry URL, project, username and token for this organization\'s private ' +
+          'Edgegap container registry (registry.edgegap.com), plus the exact docker login, build ' +
+          'and push commands for your image. Use this when the server image is not in a registry ' +
+          'yet — no Docker Hub account needed. Provisions the registry project on first use. The ' +
+          'token is registry-scoped (push/pull images in this project), not the org API token: ' +
+          'pass it to docker login via --password-stdin, never as a command-line argument, and do ' +
+          'not write it into files. Call edgegap_validate_server_config before building.',
+        inputSchema: {
+          image_name: z
+            .string()
+            .regex(/^[a-z0-9]+([._-][a-z0-9]+)*$/, 'lowercase letters, digits, ".", "_" or "-"')
+            .optional()
+            .describe('Image name without project or tag, e.g. "my-game-server". Used to build the commands.'),
+          tag: z
+            .string()
+            .optional()
+            .describe('Unique build tag for the commands, e.g. a build ID. Never "latest".'),
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      },
+      async ({ image_name, tag }) =>
+        guard(auth, async () => {
+          if (tag === 'latest') {
+            return fail('Do not use the "latest" tag: Edgegap caches by tag, so a re-pushed "latest" can deploy a stale build. Pass a build ID or timestamp.');
+          }
+
+          let creds;
+          try {
+            creds = await client.getRegistryCredentials();
+          } catch (err) {
+            if (!(err instanceof EdgegapApiError) || err.status === 401) throw err;
+            // Usually means the registry project has not been provisioned for
+            // this org yet. The plugins provision it this way on every login.
+            await client.initQuickStart('mcp');
+            creds = await client.getRegistryCredentials();
+          }
+
+          if (!creds.project || !creds.username || !creds.token) {
+            return fail(
+              'Edgegap did not return registry credentials for this organization. The developer ' +
+                `can request them in the dashboard (${DASHBOARD_URL}, Container Registry page), or ` +
+                'push to any other registry Edgegap can pull from (Docker Hub, GHCR, ECR, GCR, GitLab) ' +
+                'and pass registry_username/registry_token to edgegap_create_app_version.'
+            );
+          }
+
+          const host = (creds.registry_url || 'registry.edgegap.com').replace(/^https?:\/\//, '').replace(/\/$/, '');
+          const image = image_name ?? '<image-name>';
+          const buildTag = tag ?? '<unique-build-tag>';
+          const ref = `${host}/${creds.project}/${image}:${buildTag}`;
+
+          return ok({
+            registry_url: host,
+            project: creds.project,
+            username: creds.username,
+            token: creds.token,
+            image_ref: ref,
+            commands: {
+              login:
+                `printf '%s' "$EDGEGAP_REGISTRY_TOKEN" | docker login ${host} -u '${creds.username}' --password-stdin`,
+              build: `docker build --platform linux/amd64 -t ${ref} .`,
+              push: `docker push ${ref}`,
+            },
+            for_create_app_version: {
+              docker_repository: host,
+              docker_image: `${creds.project}/${image}`,
+              docker_tag: buildTag,
+              registry_username: creds.username,
+              registry_token: '<the token above>',
+            },
+            next_step:
+              'Export the token as EDGEGAP_REGISTRY_TOKEN in the shell that runs docker login ' +
+              '(it never needs to appear in a command line or file), then build and push. ' +
+              `Confirm the push with edgegap_list_registry_tags (image_name "${creds.project}/${image}"), ` +
+              'then call edgegap_create_app_version with the values in for_create_app_version.',
+          });
+        })
+    );
+  }
+
+  // --------------------------------------------------------------- 13 ----
+  server.registerTool(
+    'edgegap_list_registry_tags',
+    {
+      title: 'List image tags in the Edgegap registry',
+      description:
+        'List the tags pushed for one image in this organization\'s Edgegap container registry, ' +
+        'with push time and size. Call it after docker push to confirm the tag landed before ' +
+        'edgegap_create_app_version, which otherwise fails later with an image-pull error.',
+      inputSchema: {
+        image_name: z
+          .string()
+          .describe('"<project>/<image>", e.g. "my-org-cv2l3w3vy6fg/my-game-server". Project comes from edgegap_get_registry_credentials.'),
+        page: z.number().int().min(1).optional(),
+        limit: z.number().int().min(1).max(100).optional().describe('Default 20.'),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async ({ image_name, page, limit }) =>
+      guard(auth, async () => {
+        if (!image_name.includes('/')) {
+          return fail(`image_name "${image_name}" needs the project prefix: "<project>/${image_name}".`);
+        }
+        const res = await client.listRegistryTags(image_name, { page, limit: limit ?? 20 });
+        const tags = (res.data ?? []).map((t) => ({
+          tag: t.tag,
+          pushed: t.last_push_at,
+          size_mb: t.artifact?.size_mb,
+          digest: t.artifact?.image_hash,
+        }));
+        return ok({ image_name, ...pageInfo(res.total_count, tags.length, page ?? 1), tags });
+      })
+  );
+
+  // ================================================== peer-to-peer relays ====
+
+  // --------------------------------------------------------------- 14 ----
+  if (mutating) {
+    server.registerTool(
+      'edgegap_create_relay_session',
+      {
+        title: 'Create a relay session for a peer-to-peer game',
+        description:
+          'Create an Edgegap relay session so players in a peer-to-peer or host-client game connect ' +
+          'through the nearest relay instead of needing NAT punch-through or a dedicated server. ' +
+          'Use this for co-op and P2P games; use edgegap_deploy for dedicated servers. Needs no ' +
+          'application, version or image. Pass every player\'s public IP, host first. Waits until ' +
+          'the relay is ready and returns its address plus a per-player authorization token for the ' +
+          'relay transport. Relay sessions are billed while open: delete test sessions with ' +
+          'edgegap_delete_relay_session when finished.',
+        inputSchema: {
+          user_ips: z
+            .array(z.string().min(3))
+            .min(1)
+            .describe('Public IP of each player, host first. Add late joiners with edgegap_authorize_relay_user.'),
+          webhook_url: z.string().url().optional().describe('Called when the session is ready.'),
+          wait_until_ready: z.boolean().optional().describe('Poll until the relay is assigned. Default true.'),
+          timeout_seconds: z.number().int().min(5).max(120).optional().describe('Default 30.'),
+        },
+        annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      },
+      async ({ user_ips, webhook_url, wait_until_ready, timeout_seconds }) =>
+        guard(auth, async () => {
+          const created = await client.createRelaySession({
+            users: user_ips.map((ip) => ({ ip })),
+            ...(webhook_url ? { webhook_url } : {}),
+          });
+
+          if (wait_until_ready === false) {
+            return ok({
+              ...compactRelay(created),
+              next_step: `Call edgegap_get_relay_session with session_id ${created.session_id} until ready is true.`,
+            });
+          }
+
+          const budgetMs = (timeout_seconds ?? 30) * 1000;
+          const startedAt = Date.now();
+          let intervalMs = 1000;
+          let last: RelaySession = created;
+          while (!last.ready && !last.error && Date.now() - startedAt < budgetMs) {
+            await new Promise((r) => setTimeout(r, intervalMs));
+            intervalMs = Math.min(intervalMs * 1.5, 5000);
+            last = await client.getRelaySession(created.session_id);
+          }
+
+          if (last.error) {
+            return fail(
+              `Relay session ${created.session_id} failed: ${last.error}\n\n` +
+                'Check that every IP is a public address (not 127.x, 10.x, 192.168.x), then delete ' +
+                'this session with edgegap_delete_relay_session and create a new one.'
+            );
+          }
+          if (!last.ready) {
+            return fail(
+              `Relay session ${created.session_id} was not ready after ${timeout_seconds ?? 30}s ` +
+                `(status ${last.status ?? 'unknown'}). Call edgegap_get_relay_session to check again.`
+            );
+          }
+          return ok({ ...compactRelay(last), waited_seconds: Math.round((Date.now() - startedAt) / 1000) });
+        })
+    );
+  }
+
+  // --------------------------------------------------------------- 15 ----
+  server.registerTool(
+    'edgegap_get_relay_session',
+    {
+      title: 'Get a relay session',
+      description:
+        'Read one relay session: whether it is ready, the relay address and ports, and each ' +
+        'authorized player with their authorization token. edgegap_create_relay_session already ' +
+        'waits for readiness; use this to re-read a session or one created with wait_until_ready false.',
+      inputSchema: { session_id: z.string().describe('Returned by edgegap_create_relay_session.') },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async ({ session_id }) =>
+      guard(auth, async () => ok(compactRelay(await client.getRelaySession(session_id))))
+  );
+
+  if (mutating) {
+    // ------------------------------------------------------------- 16 ----
+    server.registerTool(
+      'edgegap_authorize_relay_user',
+      {
+        title: 'Add a player to a relay session',
+        description:
+          'Authorize one more player (by public IP) on an existing relay session, for a player ' +
+          'joining after the session was created. Returns that player\'s authorization token.',
+        inputSchema: {
+          session_id: z.string(),
+          user_ip: z.string().min(3).describe('Public IP of the joining player.'),
+        },
+        annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      },
+      async ({ session_id, user_ip }) =>
+        guard(auth, async () => {
+          const res = await client.authorizeRelayUser({ session_id, user_ip });
+          return ok({
+            session_id: res.session_id,
+            user_ip,
+            user_authorization_token: res.session_user?.authorization_token,
+            session_authorization_token: res.authorization_token,
+          });
+        })
+    );
+
+    // ------------------------------------------------------------- 17 ----
+    server.registerTool(
+      'edgegap_delete_relay_session',
+      {
+        title: 'Delete a relay session',
+        description:
+          'Close one relay session. Connected players lose their relay connection. Delete every ' +
+          'session you created for testing before ending your task.',
+        inputSchema: { session_id: z.string() },
+        annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: true },
+      },
+      async ({ session_id }) =>
+        guard(auth, async () => {
+          await client.deleteRelaySession(session_id);
+          return ok({ session_id, result: 'deleted' });
+        })
+    );
+  }
+
+  // ============================================================ matchmaker ====
+
+  // --------------------------------------------------------------- 18 ----
+  // Edgegap has no public API to create a matchmaker, so this does not create
+  // one. It produces the configuration the dashboard asks for, checked against
+  // the application version it points at.
+  server.registerTool(
+    'edgegap_build_matchmaker_config',
+    {
+      title: 'Build a basic matchmaker configuration',
+      description:
+        'Generate a ready-to-upload Edgegap matchmaker JSON configuration with one profile: team ' +
+        'count and size, optional latency rule, and optional expansions that relax the rules the ' +
+        'longer a player waits. Checks the referenced application version exists and has ports. ' +
+        'Edgegap has no API for creating a matchmaker, so this tool does NOT create one: save the ' +
+        'returned config to a file (e.g. matchmaker-config.json) and have the developer upload it ' +
+        'on the Matchmaker page of the dashboard. Use it for dedicated-server games; P2P games ' +
+        'want edgegap_create_relay_session instead.',
+      inputSchema: {
+        profile_name: z.string().describe('Profile clients will queue into, e.g. "casual-2v2".'),
+        application: z.string().describe('Application the matchmaker deploys.'),
+        version: z.string().describe('Version the matchmaker deploys.'),
+        team_count: z.number().int().min(1).describe('Teams per match. 1 for free-for-all or co-op.'),
+        min_team_size: z.number().int().min(1),
+        max_team_size: z.number().int().min(1),
+        max_latency_ms: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe('Adds a latency rule: drop players above this ping to the chosen region. Needs beacon pings from the client.'),
+        latency_difference_ms: z.number().int().min(0).optional().describe('Max ping spread between matched players. Default 100.'),
+        expansions: z
+          .array(
+            z.object({
+              after_seconds: z.number().int().min(1),
+              min_team_size: z.number().int().min(1).optional(),
+              max_latency_ms: z.number().int().min(1).optional(),
+            })
+          )
+          .optional()
+          .describe('Rule relaxations after a player has waited this long, e.g. [{after_seconds: 30, min_team_size: 1}].'),
+        ticket_expiration: z.string().optional().describe('Default "5m".'),
+        inspect: z.boolean().optional().describe('Expose the inspection API for debugging. Default true; turn off for production.'),
+        verify_version: z.boolean().optional().describe('Look up the application version first. Default true.'),
+      },
+      annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
+    },
+    async (args) =>
+      guard(auth, async () => {
+        assertAppAllowed(config, args.application);
+        const { config: mmConfig, problems, cautions } = buildMatchmakerConfig(args);
+
+        if (args.verify_version !== false) {
+          try {
+            const res = await client.listAppVersions(args.application);
+            const v = (res.versions ?? []).find((x) => x.name === args.version);
+            if (!v) {
+              problems.push(
+                `Version "${args.version}" was not found in application "${args.application}". ` +
+                  'Create it with edgegap_create_app_version, or pick one from edgegap_list_app_versions.'
+              );
+            } else {
+              if (v.is_active === false) problems.push(`Version "${args.version}" is inactive, so the matchmaker cannot deploy it.`);
+              if (!v.ports?.length) problems.push(`Version "${args.version}" has no ports, so matched players have nothing to connect to.`);
+            }
+          } catch (err) {
+            if (err instanceof EdgegapApiError && err.status === 404) {
+              problems.push(`Application "${args.application}" does not exist. Call edgegap_list_apps.`);
+            } else {
+              throw err;
+            }
+          }
+        }
+
+        if (problems.length > 0) {
+          return fail(
+            'The matchmaker configuration has problems; fix them before uploading:\n- ' +
+              problems.join('\n- ') +
+              `\n\nDraft config:\n${JSON.stringify(mmConfig, null, 2)}`
+          );
+        }
+
+        return ok({
+          config: mmConfig,
+          cautions: cautions.length ? cautions : undefined,
+          next_steps: [
+            'Write config to matchmaker-config.json in the project.',
+            `The developer uploads it in the dashboard (${DASHBOARD_URL}, Matchmaker page, Create Matchmaker) and waits for it to show as ready. The free tier runs on a shared test cluster for up to 3 hours per restart.`,
+            'The dashboard then shows the matchmaker API URL and auth token. Game clients call POST {api_url}/tickets ' +
+              `with header "Authorization: <auth token>" and profile "${args.profile_name}", then poll GET {api_url}/memberships/{id} until it returns the server address.`,
+            'That auth token is safe to ship in game clients: it grants no access to the Edgegap API.',
+          ],
+        });
+      })
+  );
+}
+
+/** Trims a relay session down to what a game client integration needs. */
+function compactRelay(s: RelaySession) {
+  return {
+    session_id: s.session_id,
+    ready: s.ready ?? false,
+    status: s.status,
+    error: s.error || undefined,
+    session_authorization_token: s.authorization_token,
+    relay: s.relay
+      ? {
+          host: s.relay.host,
+          ip: s.relay.ip,
+          server_port: s.relay.ports?.server,
+          client_port: s.relay.ports?.client,
+        }
+      : undefined,
+    users: (s.session_users ?? []).map((u) => ({
+      ip: u.ip_address,
+      authorization_token: u.authorization_token,
+    })),
+    how_to_connect: s.ready
+      ? 'Configure the Edgegap relay transport with the relay address, the session authorization ' +
+        'token, and each player\'s own authorization token. The host connects on server_port; ' +
+        'every other player connects on client_port.'
+      : undefined,
+  };
 }

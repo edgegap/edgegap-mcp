@@ -154,9 +154,9 @@ export default {
     const config = configForRequest(env);
 
     const handler = createMcpHandler(() => {
-      const server = new McpServer({ name: 'edgegap', version: '0.1.0' });
+      const server = new McpServer({ name: 'edgegap', version: '0.2.0' });
 
-      // The ten tool definitions are shared verbatim with the local server.
+      // The tool definitions are shared verbatim with the local server.
       // The cast bridges SDK v1 (which src/tools.ts is typed against) and v2:
       // registerTool's raw-zod-shape overload still exists in v2, so the call
       // shape is identical at runtime. When src/ moves to v2, delete the cast.
