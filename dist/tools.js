@@ -493,18 +493,47 @@ export function registerTools(server, client, config, auth) {
     // ---------------------------------------------------------------- 8 ----
     server.registerTool('edgegap_list_deployments', {
         title: 'List running deployments',
-        description: 'List active deployments, optionally filtered. Use this to find deployments left running ' +
-            'from earlier sessions before starting new ones — orphaned servers cost money.',
+        description: 'List active deployments, optionally filtered and sorted. Use this to find deployments left running ' +
+            'from earlier sessions before starting new ones — orphaned servers cost money. ' +
+            'Filter by status, application, version, tags, request_id, created_at, fleet_name or host_name, ' +
+            'e.g. [{field:"application",operator:"eq",value:"my-game"},{field:"status",operator:"eq",value:"ready"}]. ' +
+            'Operators: eq and neq on every field except created_at (eq, gte, lte); in and nin with an array value ' +
+            'on request_id, tags, application, version, fleet_name, host_name; ilike with % wildcards on fleet_name ' +
+            'and host_name. At most one filter per field. Sort by created_at or available_session_sockets.',
         inputSchema: {
-            filter: z
-                .string()
+            filters: z
+                .array(z.object({
+                field: z.enum([
+                    'status', 'request_id', 'tags', 'created_at', 'application',
+                    'version', 'fleet_name', 'host_name',
+                ]),
+                operator: z.enum(['eq', 'neq', 'in', 'nin', 'gte', 'lte', 'ilike']),
+                value: z
+                    .union([z.string(), z.array(z.string())])
+                    .describe('A string, or an array of strings for in/nin. created_at is ISO 8601, e.g. "2026-09-30T00:00:00Z".'),
+            }))
                 .optional()
-                .describe('Edgegap filter expression, e.g. by tag. Omit for all deployments.'),
+                .describe('Omit for all deployments.'),
+            order_by: z
+                .array(z.object({
+                field: z.enum(['created_at', 'available_session_sockets']),
+                order: z.enum(['asc', 'desc']),
+            }))
+                .optional()
+                .describe('e.g. [{field:"created_at",order:"asc"}] for oldest first.'),
             limit: z.number().int().min(1).max(100).optional().describe('Default 50.'),
         },
         annotations: { readOnlyHint: true, openWorldHint: true },
-    }, async ({ filter, limit }) => guard(auth, async () => {
-        const res = await client.listDeployments({ query: filter, limit: limit ?? 50 });
+    }, async ({ filters, order_by, limit }) => guard(auth, async () => {
+        const fields = (filters ?? []).map((f) => f.field);
+        const repeated = fields.find((f, i) => fields.indexOf(f) !== i);
+        if (repeated) {
+            return fail(`Only one filter per field is allowed, and "${repeated}" has more than one. Combine them with "in" or "nin".`);
+        }
+        const query = filters?.length || order_by?.length
+            ? JSON.stringify({ filters: filters ?? [], ...(order_by?.length ? { order_by } : {}) })
+            : undefined;
+        const res = await client.listDeployments({ query, limit: limit ?? 50 });
         const rows = (res.data ?? []).map((d) => ({
             request_id: d.request_id,
             ready: d.ready,
@@ -643,7 +672,8 @@ export function registerTools(server, client, config, auth) {
             ports_for_create_app_version: generated.ports,
             commands: {
                 build: `docker build --platform linux/amd64 -t ${ref} .`,
-                test_locally: `docker run --rm --platform linux/amd64 ${portFlags} ${ref}`,
+                // --platform belongs on build only: the image is already linux/amd64.
+                test_locally: `docker run --rm ${portFlags} ${ref}`,
             },
             next_step: 'Confirm every assumption, write this to Dockerfile, build it, and run it locally to check ' +
                 'the server starts and stays up. Then push it (edgegap_get_registry_credentials) and ' +

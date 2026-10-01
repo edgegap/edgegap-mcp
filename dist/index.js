@@ -29,7 +29,7 @@ async function main() {
         }
         throw err;
     }
-    const server = new McpServer({ name: 'edgegap', version: '0.2.2' }, { instructions: serverInstructions('local') });
+    const server = new McpServer({ name: 'edgegap', version: '0.3.0' }, { instructions: serverInstructions('local') });
     warnIfTokenInArgv();
     const auth = new TokenProvider(config);
     auth.attach(server.server);
