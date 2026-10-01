@@ -1,7 +1,7 @@
 /**
  * The golden-path tools: getting a server image right and into a registry,
- * deploying it, and the two things players need around it — a relay for
- * peer-to-peer games and a matchmaker config for dedicated ones.
+ * deploying it as an authoritative dedicated server, matching players into it,
+ * and — for games built host-client — relays as the alternative.
  *
  * Tool descriptions are written for a coding agent, not a human reading docs.
  * Each one says when to reach for it and what to call next, because the main
@@ -15,11 +15,74 @@ import { Config, assertAppAllowed, redact } from './config.js';
 import { TokenSource, TokenUnavailableError } from './auth.js';
 import {
   validateServerConfig,
-  REFERENCE_DOCKERFILES,
   PROTOCOLS,
   NETCODE_NAMES,
 } from './serverconfig.js';
+import { generateDockerfile, DockerfileInputError } from './dockerfile.js';
 import { buildMatchmakerConfig, DASHBOARD_URL } from './matchmaker.js';
+
+/**
+ * The one definition of "dedicated server vs relay" this server gives agents.
+ * Used in the server instructions, the relay tool description, and every relay
+ * result, so the recommendation cannot drift between them.
+ *
+ * Agents left alone tend to pick relays because they need no server image.
+ * That optimises the agent's effort, not the developer's game, so the default
+ * here is the authoritative server and relays need a stated reason.
+ */
+export const ARCHITECTURE_GUIDANCE =
+  'Dedicated server vs relay — recommend a dedicated server by default.\n' +
+  '- Dedicated (authoritative) server (edgegap_deploy): Edgegap runs the headless server ' +
+  'build, and the server owns the game state. No player has host advantage, cheating is ' +
+  'much harder, the match survives any player leaving, every player is one hop from the ' +
+  'server, and performance does not depend on a player\'s PC or home connection.\n' +
+  '- Relay (edgegap_create_relay_session): NOT a game server. Edgegap only forwards traffic ' +
+  'between players; one player\'s game is the host and owns the state. The host can cheat ' +
+  'and has zero latency while everyone else has two hops, the host\'s machine and upload ' +
+  'bandwidth cap the match, and the match ends when the host quits unless the game ' +
+  'implements host migration.\n' +
+  'Use a relay only when the developer explicitly wants peer-to-peer/host-client, or the ' +
+  'game\'s netcode is already built as a listen server and moving to a dedicated server is ' +
+  'not an option. "It needs no server image" is not a reason: edgegap_generate_dockerfile ' +
+  'removes most of that work. If unsure, ask the developer before choosing a relay.';
+
+/**
+ * Server instructions, shared by the local server and the hosted Worker so
+ * both give agents the same golden path. Only the credential paragraph differs.
+ */
+export function serverInstructions(mode: 'local' | 'hosted'): string {
+  const credentials =
+    mode === 'local'
+      ? 'Credentials: if no token was configured, the first tool call asks the developer for one. '
+      : 'Credentials: the token comes from the Authorization header on this connection. ';
+  return (
+    'Host multiplayer games on Edgegap. The recommended setup is an authoritative dedicated ' +
+    'server per match; relays exist for games built host-client.\n\n' +
+    ARCHITECTURE_GUIDANCE +
+    '\n\n' +
+    'Golden path for a first dedicated-server deployment:\n' +
+    '1. edgegap_generate_dockerfile if the project has no Dockerfile, or ' +
+    'edgegap_validate_server_config on the one it has, before building\n' +
+    '2. edgegap_get_registry_credentials, then docker build --platform linux/amd64 and push\n' +
+    '3. edgegap_list_registry_tags to confirm the push landed\n' +
+    '4. edgegap_list_apps, then edgegap_create_app if no suitable application exists\n' +
+    '5. edgegap_create_app_version to register the image\n' +
+    '6. edgegap_deploy to start a server near the players\n' +
+    '7. edgegap_wait_for_deployment to get the connection address\n' +
+    '8. edgegap_stop_deployment when finished\n' +
+    'To match players into those servers, edgegap_build_matchmaker_config produces the ' +
+    'config the developer uploads in the dashboard.\n\n' +
+    'Deployments and relay sessions cost money while running. Tag test deployments, and ' +
+    'stop deployments and delete relay sessions you created before ending the task. If a ' +
+    'deployment errors, read the container logs before redeploying.\n\n' +
+    credentials +
+    'That token is org-wide and cannot be scoped by Edgegap, so it authorises far more than ' +
+    'any single task needs. Treat it as a supervised credential: do not use it for work the ' +
+    'developer did not ask for, do not enumerate or modify unrelated applications, and do ' +
+    'not repeat operations against it to explore what is possible. If the developer declines ' +
+    'to provide a token, stop and report which operation needed it — do not retry.'
+  );
+}
 
 /** 1x1 transparent PNG. The create-app endpoint requires an image and agents
  *  have no sensible one to supply; a placeholder beats a blocked flow. */
@@ -394,8 +457,9 @@ export function registerTools(
       {
         title: 'Deploy a game server',
         description:
-          'Start one containerized instance of an application version, placed near the players ' +
-          'you specify. Returns immediately with a request_id; the server is still starting and ' +
+          'Start one authoritative dedicated game server from an application version, placed near ' +
+          'the players you specify. This is the recommended way to host a multiplayer match: the ' +
+          'server owns the game state, so no player hosts it. Returns immediately with a request_id; the server is still starting and ' +
           'has no connection details yet. Follow this call with edgegap_wait_for_deployment to ' +
           'get the address players connect to. Always stop deployments you started for testing.',
         inputSchema: {
@@ -633,6 +697,111 @@ export function registerTools(
 
   // ============================================= before the first deploy ====
 
+  // -------------------------------------------------------------- 11a ----
+  // Pure text generation: no token, no network, so it is always registered and
+  // never goes through guard().
+  server.registerTool(
+    'edgegap_generate_dockerfile',
+    {
+      title: 'Generate a game server Dockerfile',
+      description:
+        'Write a Dockerfile for this project\'s headless game server build, ready for Edgegap: ' +
+        'linux/amd64 base, the build folder copied in, the binary made executable, the right ' +
+        'headless flags (Unity -batchmode -nographics, Godot --headless), a non-root user where ' +
+        'the engine needs it (Unreal refuses root), CRLF fixes for start scripts, and EXPOSE ' +
+        'lines matching the ports. Call this when the project has no Dockerfile, before ' +
+        'building anything. Look at the build output first so you can pass the real build ' +
+        'folder, binary name and port; anything you omit is assumed and listed under ' +
+        'assumptions, which you must confirm with the developer or the project files. Write the ' +
+        'result to Dockerfile, then build. The output is checked against ' +
+        'edgegap_validate_server_config before it is returned. Makes no API calls.',
+      inputSchema: {
+        engine: z.enum(['unity', 'unreal', 'godot', 'other']).describe('Game engine of the server build.'),
+        build_path: z
+          .string()
+          .optional()
+          .describe(
+            'Server build folder, relative to where docker build runs. Defaults: unity ' +
+              '"Builds/EdgegapServer", unreal "." (run from inside the packaged LinuxServer folder), godot "build".'
+          ),
+        executable: z
+          .string()
+          .optional()
+          .describe(
+            'File name of the server binary or start script inside build_path. Defaults: unity ' +
+              '"ServerBuild", unreal "StartServer.sh", godot "server.x86_64". Required for "other".'
+          ),
+        ports: z
+          .array(
+            z.object({
+              port: z.number().int().min(1).max(59999),
+              protocol: z.enum(PROTOCOLS),
+              name: z.string().optional(),
+            })
+          )
+          .optional()
+          .describe('Ports the server listens on. Default: 7777, with the protocol the netcode uses (UDP if unknown).'),
+        netcode: z
+          .string()
+          .optional()
+          .describe(`Networking transport, to pick the protocol. Known: ${NETCODE_NAMES.join(', ')}.`),
+        launch_args: z
+          .array(z.string())
+          .optional()
+          .describe('Extra server arguments, one per entry, e.g. ["-log", "-port=7777"].'),
+        base_image: z.string().optional().describe('Default "ubuntu:22.04".'),
+      },
+      annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    async (args) => {
+      let generated;
+      try {
+        generated = generateDockerfile(args);
+      } catch (err) {
+        if (err instanceof DockerfileInputError) return fail(err.message);
+        throw err;
+      }
+
+      // Never hand back something our own validator would reject.
+      const check = validateServerConfig({
+        dockerfile: generated.dockerfile,
+        engine: args.engine,
+        netcode: args.netcode,
+        ports: generated.ports,
+      });
+      if (check.errors.length > 0) {
+        return fail(
+          'The generated Dockerfile failed validation, which means these inputs combine badly:\n- ' +
+            check.errors.map((e) => `${e.message} ${e.fix}`).join('\n- ')
+        );
+      }
+
+      const ref = '<image>:<unique-build-tag>';
+      const portFlags = generated.ports
+        .flatMap((p) =>
+          p.protocol === 'TCP/UDP'
+            ? [`-p ${p.port}:${p.port}/udp`, `-p ${p.port}:${p.port}/tcp`]
+            : [`-p ${p.port}:${p.port}/${p.protocol === 'UDP' ? 'udp' : 'tcp'}`]
+        )
+        .join(' ');
+
+      return ok({
+        dockerfile: generated.dockerfile,
+        assumptions: generated.assumptions,
+        warnings: check.warnings.length ? check.warnings : undefined,
+        ports_for_create_app_version: generated.ports,
+        commands: {
+          build: `docker build --platform linux/amd64 -t ${ref} .`,
+          test_locally: `docker run --rm --platform linux/amd64 ${portFlags} ${ref}`,
+        },
+        next_step:
+          'Confirm every assumption, write this to Dockerfile, build it, and run it locally to check ' +
+          'the server starts and stays up. Then push it (edgegap_get_registry_credentials) and ' +
+          'register it with edgegap_create_app_version using ports_for_create_app_version.',
+      });
+    }
+  );
+
   // --------------------------------------------------------------- 11 ----
   // Pure text analysis: no token, no network, so it is always registered and
   // never goes through guard().
@@ -647,8 +816,8 @@ export function registerTools(
         'runs linux/amd64), Unreal running as root, missing Unity -batchmode -nographics, a ' +
         'server bound to localhost, EXPOSE ports that do not match the version ports, a protocol ' +
         'that does not match the netcode transport, the "latest" tag, and bad CPU/memory ratios. ' +
-        'Pass the Dockerfile text (read it from disk first). With no Dockerfile and an engine of ' +
-        'unity or unreal, returns Edgegap\'s reference Dockerfile to start from. Makes no API calls.',
+        'Pass the Dockerfile text (read it from disk first). If there is no Dockerfile yet, call ' +
+        'edgegap_generate_dockerfile instead. Makes no API calls.',
       inputSchema: {
         dockerfile: z.string().optional().describe('Full text of the Dockerfile.'),
         engine: z
@@ -679,8 +848,12 @@ export function registerTools(
     },
     async (args) => {
       const { engine, errors, warnings } = validateServerConfig(args);
-      const reference = REFERENCE_DOCKERFILES[engine];
-      const wantReference = reference && (args.dockerfile === undefined || errors.length > 0);
+      // A known-good starting point when there is nothing to check, or what was
+      // checked is broken. Only for engines with a real default binary name.
+      const reference =
+        engine !== 'other' && (args.dockerfile === undefined || errors.length > 0)
+          ? generateDockerfile({ engine, ports: args.ports, netcode: args.netcode }).dockerfile
+          : undefined;
       const verdict = errors.length > 0 ? 'fail' : warnings.length > 0 ? 'pass_with_warnings' : 'pass';
 
       return ok({
@@ -694,10 +867,11 @@ export function registerTools(
           resources: args.cpu_units !== undefined || args.memory_mb !== undefined,
           image: args.docker_tag !== undefined || args.docker_image !== undefined,
         },
-        reference_dockerfile: wantReference ? reference : undefined,
+        reference_dockerfile: reference,
         next_step:
           verdict === 'fail'
-            ? 'Fix every error and call this again before building. Do not build or push an image that fails here.'
+            ? 'Fix every error and call this again before building. Do not build or push an image that ' +
+              'fails here. edgegap_generate_dockerfile can write a correct one for this project.'
             : 'Build with "docker build --platform linux/amd64 -t <image>:<unique-tag> ." and run it ' +
               'locally with the same port mapping to confirm it starts. Then push it; ' +
               'edgegap_get_registry_credentials gives you a registry and the exact commands.',
@@ -835,13 +1009,18 @@ export function registerTools(
     server.registerTool(
       'edgegap_create_relay_session',
       {
-        title: 'Create a relay session for a peer-to-peer game',
+        title: 'Create a relay session (host-client games only)',
         description:
-          'Create an Edgegap relay session so players in a peer-to-peer or host-client game connect ' +
-          'through the nearest relay instead of needing NAT punch-through or a dedicated server. ' +
-          'Use this for co-op and P2P games; use edgegap_deploy for dedicated servers. Needs no ' +
-          'application, version or image. Pass every player\'s public IP, host first. Waits until ' +
-          'the relay is ready and returns its address plus a per-player authorization token for the ' +
+          'A relay is NOT a game server and is not the recommended default — for a multiplayer ' +
+          'match, deploy an authoritative dedicated server with edgegap_deploy instead. A relay ' +
+          'only forwards traffic between players while one player\'s game acts as host and owns ' +
+          'the game state: the host can cheat and has a latency advantage, the host\'s PC and ' +
+          'connection cap the match, and the match ends if the host quits. Only use this when the ' +
+          'developer has chosen peer-to-peer/host-client, or the netcode is already a listen ' +
+          'server and a dedicated server is not an option; if that has not been established, ask ' +
+          'first. Never pick it only because it needs no server image. ' +
+          'Creates an Edgegap relay session for every player\'s public IP, host first, waits until ' +
+          'it is ready, and returns the relay address plus per-player authorization tokens for the ' +
           'relay transport. Relay sessions are billed while open: delete test sessions with ' +
           'edgegap_delete_relay_session when finished.',
         inputSchema: {
@@ -975,8 +1154,8 @@ export function registerTools(
         'longer a player waits. Checks the referenced application version exists and has ports. ' +
         'Edgegap has no API for creating a matchmaker, so this tool does NOT create one: save the ' +
         'returned config to a file (e.g. matchmaker-config.json) and have the developer upload it ' +
-        'on the Matchmaker page of the dashboard. Use it for dedicated-server games; P2P games ' +
-        'want edgegap_create_relay_session instead.',
+        'on the Matchmaker page of the dashboard. The matchmaker starts an authoritative dedicated ' +
+        'server for each match, which is the recommended setup for multiplayer games.',
       inputSchema: {
         profile_name: z.string().describe('Profile clients will queue into, e.g. "casual-2v2".'),
         application: z.string().describe('Application the matchmaker deploys.'),
@@ -1082,5 +1261,9 @@ function compactRelay(s: RelaySession) {
         'token, and each player\'s own authorization token. The host connects on server_port; ' +
         'every other player connects on client_port.'
       : undefined,
+    architecture_note:
+      'This is a relay, not a game server: the host player\'s game owns the match. If the ' +
+      'developer has not explicitly chosen host-client, tell them about the trade-offs. ' +
+      ARCHITECTURE_GUIDANCE,
   };
 }
