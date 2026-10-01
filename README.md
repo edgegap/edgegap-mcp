@@ -257,7 +257,7 @@ Clients connect to `http://<host>:8080/mcp` with their own `Authorization` heade
 Prebuilt images are published to `ghcr.io/edgegap/edgegap-mcp`, tagged `main` and `sha-<commit>` on every push to `main`, plus the version on `v*` tags:
 
 ```bash
-docker run --rm -p 8080:8080 ghcr.io/edgegap/edgegap-mcp:0.3.0
+docker run --rm -p 8080:8080 ghcr.io/edgegap/edgegap-mcp:main
 ```
 
 ## Development
