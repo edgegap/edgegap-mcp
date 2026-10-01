@@ -254,7 +254,11 @@ docker run --rm -p 8080:8080 edgegap-mcp
 
 Clients connect to `http://<host>:8080/mcp` with their own `Authorization` header, the same way they connect to the hosted endpoint. The image holds no credential, and `/health` answers without one. `PORT`, `HOST`, `EDGEGAP_READ_ONLY`, `EDGEGAP_APP_ALLOWLIST` and `EDGEGAP_MAX_DURATION_MINUTES` apply. Read [worker/DECISION.md](worker/DECISION.md) before exposing it beyond a private network.
 
-Every push to `main` builds the image and pushes it to the Edgegap container registry as `registry.edgegap.com/<project>/edgegap-mcp`, tagged `main` and `sha-<commit>` (plus the version on `v*` tags). See [.github/workflows/docker.yml](.github/workflows/docker.yml) for the repository variables and secrets it needs.
+Prebuilt images are published to `ghcr.io/edgegap/edgegap-mcp`, tagged `main` and `sha-<commit>` on every push to `main`, plus the version on `v*` tags:
+
+```bash
+docker run --rm -p 8080:8080 ghcr.io/edgegap/edgegap-mcp:0.3.0
+```
 
 ## Development
 
