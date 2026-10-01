@@ -2,11 +2,12 @@
 
 An MCP server for Edgegap that lets a coding agent take a developer from "I
 have a headless server build" to "players are connected to it" without the
-developer reading the API reference: checking the Dockerfile and ports, pushing
-to Edgegap's registry, deploying, and — for peer-to-peer games — opening a relay
-instead.
+developer reading the API reference: writing and checking the Dockerfile,
+pushing to Edgegap's registry, and deploying an authoritative dedicated server.
+Relays are there too, for games built host-client, but they are not the default
+— see [Dedicated servers vs relays](#dedicated-servers-vs-relays).
 
-Eighteen tools, hand-picked. Not generated from the OpenAPI spec — see
+Nineteen tools, hand-picked. Not generated from the OpenAPI spec — see
 [Design decisions](#design-decisions) for why.
 
 ## Install
@@ -163,9 +164,32 @@ locally.
 | `EDGEGAP_MAX_DURATION_MINUTES` | `60` | Ceiling on `max_duration` the agent may set on a version. Caps runaway cost from an unattended agent. |
 | `EDGEGAP_TIMEOUT_MS` | `30000` | Per-request HTTP timeout. |
 
+## Dedicated servers vs relays
+
+Edgegap hosts multiplayer games two ways, and they are not interchangeable.
+**This server recommends a dedicated server by default**, and tells the agent so
+in its instructions, in the tool descriptions, and in every relay result.
+
+| | Dedicated (authoritative) server | Relay |
+| --- | --- | --- |
+| What Edgegap runs | Your headless server build, near the players | Only a traffic forwarder; no game code |
+| Who owns the game state | The server | One player's game (the host) |
+| Cheating | Much harder: the server decides | The host can change anything |
+| Fairness | Every player is one hop from the server | The host has zero latency; everyone else has two hops |
+| Host quits | Match continues | Match ends, unless the game implements host migration |
+| Limited by | The server's allocated CPU and memory | The host's PC and home upload bandwidth |
+| Needs | A server image (`edgegap_generate_dockerfile` writes the Dockerfile) | Netcode built as a listen server (host-client) |
+| Tools | `edgegap_deploy`, matchmaker | `edgegap_create_relay_session` |
+
+Agents left alone tend to pick relays because they need no server image. That
+saves the agent work, not the developer's game, so the relay tool tells the
+agent to use it only when the developer has chosen host-client, or the netcode
+is already a listen server and moving to a dedicated server is not an option —
+and to ask when that is unclear.
+
 ## Tools
 
-Eighteen tools, grouped by where they fall on the path. The same set in both
+Nineteen tools, grouped by where they fall on the path. The same set in both
 modes; `EDGEGAP_READ_ONLY=1` hides the ● ones.
 
 **Before the first deploy** — getting a headless build into a correct image and
@@ -173,11 +197,12 @@ into a registry, which is where agent-driven onboarding actually stalls.
 
 | Tool | Mutating | What it's for |
 | --- | --- | --- |
-| `edgegap_validate_server_config` | | Static check of a Dockerfile, ports, resources and tag against Edgegap's requirements: linux/amd64, Unreal not running as root, Unity `-batchmode -nographics`, loopback binds, EXPOSE vs. version ports, protocol vs. netcode transport, `latest` tags. Returns Edgegap's reference Unity/Unreal Dockerfile when there is none yet or it fails. No API call. |
+| `edgegap_generate_dockerfile` | | Write a Dockerfile for this project's build: its build folder, binary or start script, ports and launch arguments, with the right headless flags, non-root user (Unreal), CRLF fix for start scripts, and matching EXPOSE lines. Lists anything it had to assume, returns the ports for `edgegap_create_app_version`, and is checked against the validator before it is returned. Unity, Unreal, Godot, or any other engine. No API call. |
+| `edgegap_validate_server_config` | | Static check of an existing Dockerfile, ports, resources and tag against Edgegap's requirements: linux/amd64, Unreal not running as root, Unity `-batchmode -nographics`, loopback binds, EXPOSE vs. version ports, protocol vs. netcode transport, `latest` tags. Returns a known-good Dockerfile for the engine when the one checked fails. No API call. |
 | `edgegap_get_registry_credentials` | ● | Push credentials for the org's private `registry.edgegap.com` project, plus the exact login/build/push commands and the values to pass to `edgegap_create_app_version`. Provisions the project on first use. |
 | `edgegap_list_registry_tags` | | Confirm a pushed tag landed before registering it. |
 
-**Dedicated servers** — the original golden path.
+**Dedicated servers** — the recommended way to host a match.
 
 | Tool | Mutating | What it's for |
 | --- | --- | --- |
@@ -185,28 +210,28 @@ into a registry, which is where agent-driven onboarding actually stalls.
 | `edgegap_create_app` | ● | Create the container for versions. |
 | `edgegap_list_app_versions` | | Find a deployable version, or copy settings from a working one. |
 | `edgegap_create_app_version` | ● | Register a container image with CPU, memory, and ports. |
-| `edgegap_deploy` | ● | Start one instance near specified players. |
+| `edgegap_deploy` | ● | Start one authoritative server near specified players. |
 | `edgegap_get_deployment` | | Single status read. |
 | `edgegap_wait_for_deployment` | | Poll to ready with backoff, then return the connection address. |
 | `edgegap_list_deployments` | | Find orphaned servers from earlier sessions. |
 | `edgegap_stop_deployment` | ● | Graceful SIGTERM, one deployment at a time. |
 | `edgegap_get_deployment_logs` | | Container output and crash exit code after a failure. |
 
-**Peer-to-peer relays** — for co-op and host-client games, which need no server
-image at all.
-
-| Tool | Mutating | What it's for |
-| --- | --- | --- |
-| `edgegap_create_relay_session` | ● | Open a relay session for a set of player IPs, wait until it is ready, and return the relay address, ports, and per-player authorization tokens. |
-| `edgegap_get_relay_session` | | Re-read a session. |
-| `edgegap_authorize_relay_user` | ● | Add a player who joins after the session was created. |
-| `edgegap_delete_relay_session` | ● | Close a session. |
-
-**Matchmaking**
+**Matchmaking** — puts players into dedicated servers.
 
 | Tool | Mutating | What it's for |
 | --- | --- | --- |
 | `edgegap_build_matchmaker_config` | | Generate a basic matchmaker configuration (teams, team size, optional latency rule and expansions) checked against the application version it deploys. Edgegap has no API for creating a matchmaker, so the developer uploads the result in the dashboard. |
+
+**Relays** — only for games built host-client; not a game server. See
+[Dedicated servers vs relays](#dedicated-servers-vs-relays).
+
+| Tool | Mutating | What it's for |
+| --- | --- | --- |
+| `edgegap_create_relay_session` | ● | Open a relay session for a set of player IPs, wait until it is ready, and return the relay address, ports, and per-player authorization tokens, plus the trade-offs to raise with the developer. |
+| `edgegap_get_relay_session` | | Re-read a session. |
+| `edgegap_authorize_relay_user` | ● | Add a player who joins after the session was created. |
+| `edgegap_delete_relay_session` | ● | Close a session. |
 
 ## Design decisions
 
@@ -230,6 +255,19 @@ round trip to the human.
 player location are caught here rather than surfacing as an opaque 400.
 `edgegap_validate_server_config` extends this to the image itself, before a
 build and push are spent discovering a problem.
+
+**Generated Dockerfiles are validated before they are returned.**
+`edgegap_generate_dockerfile` runs its own output through
+`edgegap_validate_server_config` and refuses to return anything that fails, so
+the two tools cannot disagree. Every value it writes into the Dockerfile (paths,
+binary name, launch arguments) is restricted to characters that cannot start a
+new instruction or escape into a shell. The Unity template leaves out the `env`
+dump from Edgegap's plugin Dockerfile, which writes hidden environment variables
+into container logs.
+
+**The same instructions on both transports.** The hosted Worker used to start
+without server instructions, so hosted agents never saw the golden path. Both
+entry points now use `serverInstructions()` from `src/tools.ts`.
 
 **The registry token is handed to the agent; the API token never is.** The agent
 has to run `docker login`, so the registry token is returned in the tool result.
@@ -260,9 +298,9 @@ ACL/whitelist entries, deployment tags, metrics, registry tag deletion, DNS
 configuration, and matchmaker lifecycle (start, stop, delete).
 
 These belong to studios already operating on the platform, not to a developer
-getting a first game online. Relays, registry push, and a basic matchmaker
-config were moved in scope because agents hit them before the first deploy,
-not after.
+getting a first game online. Dockerfile generation and validation, registry
+push, a basic matchmaker config, and relays were moved in scope because agents
+hit them before the first deploy, not after.
 
 ## Known limitation: asking for the token at all
 

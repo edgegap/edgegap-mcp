@@ -98,7 +98,7 @@ check('bad Unreal config fails', r.verdict === 'fail');
 for (const code of ['wrong-platform', 'unreal-root', 'crlf-script', 'loopback-bind', 'ssh-exposed', 'unpinned-base', 'protocol-mismatch', 'bad-protocol', 'latest-tag', 'memory-ratio']) {
   check(`flags ${code}`, codes.includes(code), codes.join(','));
 }
-check('returns reference Unreal Dockerfile on failure', /USER m/.test(r.reference_dockerfile ?? ''));
+check('returns reference Unreal Dockerfile on failure', /USER server/.test(r.reference_dockerfile ?? ''));
 
 r = json(await c.callTool({ name: 'edgegap_validate_server_config', arguments: { netcode: 'mirror-kcp', ports: [{ port: 7777, protocol: 'TCP' }] } }));
 check('netcode/protocol mismatch is an error', r.errors.some((f) => f.code === 'netcode-protocol'));
@@ -112,6 +112,69 @@ check('registry.edgegap.com image without project is an error', r.errors.some((f
 r = json(await c.callTool({ name: 'edgegap_validate_server_config', arguments: {
   dockerfile: 'FROM ubuntu:22.04\nCOPY build/Server.exe /app/\nCMD ["/app/Server.exe"]' } }));
 check('Windows .exe build is an error', r.errors.some((f) => f.code === 'windows-binary'));
+
+// ------------------------------------------------------ generate_dockerfile ----
+console.log('\ngenerate_dockerfile');
+const gen = async (args) => c.callTool({ name: 'edgegap_generate_dockerfile', arguments: args });
+const validate = async (args) => json(await c.callTool({ name: 'edgegap_validate_server_config', arguments: args }));
+
+// The core guarantee: whatever the generator writes, the validator accepts.
+const genCases = [
+  ['unity defaults', { engine: 'unity' }],
+  ['unreal defaults', { engine: 'unreal' }],
+  ['godot defaults', { engine: 'godot' }],
+  ['unity custom build', { engine: 'unity', build_path: 'Build/Linux', executable: 'MyGame.x86_64', ports: [{ port: 7770, protocol: 'UDP' }], netcode: 'fishnet-tugboat', launch_args: ['-logfile', '/dev/stdout'] }],
+  ['unreal packaged binary script', { engine: 'unreal', executable: 'MyGameServer.sh', launch_args: ['-log', '-port=7777'] }],
+  ['other engine, TCP/UDP + WS ports', { engine: 'other', executable: 'server', ports: [{ port: 9000, protocol: 'TCP/UDP' }, { port: 9001, protocol: 'WS', name: 'web' }] }],
+];
+for (const [label, args] of genCases) {
+  const res = await gen(args);
+  if (res.isError) { check(`${label}: generated`, false, text(res)); continue; }
+  const g = json(res);
+  const v = await validate({ dockerfile: g.dockerfile, engine: args.engine, netcode: args.netcode, ports: g.ports_for_create_app_version });
+  check(`${label}: passes the validator with no errors or warnings`, v.verdict === 'pass', JSON.stringify([...v.errors, ...v.warnings].map((f) => f.code)));
+}
+
+let g = json(await gen({ engine: 'unity', build_path: 'Build/Linux', executable: 'MyGame.x86_64', ports: [{ port: 7770, protocol: 'UDP' }], launch_args: ['-logfile', '/dev/stdout'] }));
+check('unity: copies the given build folder', g.dockerfile.includes('COPY Build/Linux /root/build/'));
+check('unity: launches the given binary headless with the extra args', g.dockerfile.includes('/root/build/MyGame.x86_64 -batchmode -nographics -logfile /dev/stdout'));
+check('unity: does not dump env vars into logs', !g.dockerfile.includes('env;'));
+check('unity: EXPOSE matches the port', g.dockerfile.includes('EXPOSE 7770/udp'));
+check('nothing assumed when everything is given', !g.assumptions.some((a) => /Assumed/.test(a)), JSON.stringify(g.assumptions));
+check('returns ports for create_app_version', JSON.stringify(g.ports_for_create_app_version) === JSON.stringify([{ port: 7770, protocol: 'UDP', name: 'gameport' }]));
+check('local test command maps the UDP port', g.commands.test_locally.includes('-p 7770:7770/udp'));
+
+g = json(await gen({ engine: 'unity' }));
+check('defaults are listed as assumptions to confirm', g.assumptions.some((a) => /ServerBuild/.test(a)) && g.assumptions.some((a) => /7777/.test(a)));
+g = json(await gen({ engine: 'unity', netcode: 'mirror-telepathy' }));
+check('netcode picks the protocol (Telepathy -> TCP)', g.ports_for_create_app_version[0].protocol === 'TCP' && g.dockerfile.includes('EXPOSE 7777/tcp'));
+g = json(await gen({ engine: 'unreal' }));
+check('unreal: non-root user and CRLF fix', g.dockerfile.includes('USER server') && g.dockerfile.includes("sed -i 's/\\r$//' /app/StartServer.sh"));
+g = json(await gen({ engine: 'godot', executable: 'game.x86_64' }));
+check('godot: --headless in exec form', g.dockerfile.includes('CMD ["/app/game.x86_64","--headless"]'));
+g = json(await gen({ engine: 'other', executable: 'srv', ports: [{ port: 9000, protocol: 'TCP/UDP' }] }));
+check('TCP/UDP exposes both', g.dockerfile.includes('EXPOSE 9000/udp') && g.dockerfile.includes('EXPOSE 9000/tcp'));
+
+let gr = await gen({ engine: 'other' });
+check('other engine requires executable', gr.isError && /executable is required/.test(text(gr)));
+gr = await gen({ engine: 'unity', launch_args: ['-port 7777; rm -rf /'] });
+check('rejects shell metacharacters in launch args', gr.isError === true);
+gr = await gen({ engine: 'unity', build_path: '../secrets' });
+check('rejects build paths outside the build context', gr.isError === true);
+gr = await gen({ engine: 'unity', executable: 'Server"\nRUN curl evil' });
+check('rejects executable names that would inject Dockerfile lines', gr.isError === true);
+
+// ---------------------------------------------------- server vs relay guidance ----
+console.log('\nserver vs relay guidance');
+const instructions = c.getInstructions() ?? '';
+check('instructions recommend a dedicated server by default', /recommend a dedicated server by default/i.test(instructions));
+check('instructions say a relay is not a game server', /Relay .*NOT a game server/s.test(instructions));
+check('instructions start the golden path with generate_dockerfile', instructions.includes('1. edgegap_generate_dockerfile'));
+const listed = (await c.listTools()).tools;
+const desc = (n) => listed.find((t) => t.name === n)?.description ?? '';
+check('relay tool leads with "NOT a game server"', /^A relay is NOT a game server/.test(desc('edgegap_create_relay_session')));
+check('relay tool points to edgegap_deploy instead', /edgegap_deploy/.test(desc('edgegap_create_relay_session')));
+check('deploy tool says it is the recommended authoritative server', /authoritative dedicated game server/.test(desc('edgegap_deploy')) && /recommended/.test(desc('edgegap_deploy')));
 
 // ------------------------------------------------------------- registry ----
 console.log('\nregistry');
@@ -144,6 +207,7 @@ check('waits until ready', r.ready === true && relayPolls >= 2, `ready=${r.ready
 check('returns relay host and both ports', r.relay?.host === 'cc84b011777b.pr.edgegap.net' && r.relay.server_port?.port === 31527 && r.relay.client_port?.port === 32089);
 check('returns per-player authorization tokens', r.users?.length === 2 && r.users[0].authorization_token === 901);
 check('returns session authorization token', r.session_authorization_token === 111);
+check('relay result says it is not a game server and recommends one', /relay, not a game server/.test(r.architecture_note ?? '') && /recommend a dedicated server/.test(r.architecture_note ?? ''));
 
 r = json(await c.callTool({ name: 'edgegap_authorize_relay_user', arguments: { session_id: 'abc123-S', user_ip: '192.0.2.9' } }));
 check('authorize returns the new player token', r.user_authorization_token === 903);
@@ -177,7 +241,7 @@ const names = (await ro.listTools()).tools.map((t) => t.name);
 for (const n of ['edgegap_get_registry_credentials', 'edgegap_create_relay_session', 'edgegap_authorize_relay_user', 'edgegap_delete_relay_session']) {
   check(`${n} hidden`, !names.includes(n));
 }
-for (const n of ['edgegap_validate_server_config', 'edgegap_list_registry_tags', 'edgegap_get_relay_session', 'edgegap_build_matchmaker_config']) {
+for (const n of ['edgegap_generate_dockerfile', 'edgegap_validate_server_config', 'edgegap_list_registry_tags', 'edgegap_get_relay_session', 'edgegap_build_matchmaker_config']) {
   check(`${n} available`, names.includes(n));
 }
 await ro.close();

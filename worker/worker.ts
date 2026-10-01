@@ -38,7 +38,7 @@ import { McpServer } from '@modelcontextprotocol/server';
 import type { McpServer as McpServerV1 } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { EdgegapClient } from '../src/client.js';
 import { StaticTokenProvider } from '../src/auth.js';
-import { registerTools } from '../src/tools.js';
+import { registerTools, serverInstructions } from '../src/tools.js';
 import type { Config } from '../src/config.js';
 
 export interface Env {
@@ -154,7 +154,10 @@ export default {
     const config = configForRequest(env);
 
     const handler = createMcpHandler(() => {
-      const server = new McpServer({ name: 'edgegap', version: '0.2.0' });
+      const server = new McpServer(
+        { name: 'edgegap', version: '0.2.1' },
+        { instructions: serverInstructions('hosted') }
+      );
 
       // The tool definitions are shared verbatim with the local server.
       // The cast bridges SDK v1 (which src/tools.ts is typed against) and v2:

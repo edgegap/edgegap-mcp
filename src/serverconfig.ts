@@ -68,54 +68,10 @@ export interface Finding {
   line?: number;
 }
 
-/** Edgegap's own plugin Dockerfiles, lightly commented. Returned when the
- *  agent has none yet, or has one that fails, so it starts from known-good. */
-export const REFERENCE_DOCKERFILES: Partial<Record<Engine, string>> = {
-  unity: [
-    'FROM ubuntu:22.04',
-    '',
-    'ARG DEBIAN_FRONTEND=noninteractive',
-    '# Folder containing the Linux Dedicated Server build (ServerBuild, *_Data, UnityPlayer.so).',
-    'ARG SERVER_BUILD_PATH=Builds/EdgegapServer',
-    '',
-    'COPY ${SERVER_BUILD_PATH} /root/build/',
-    'WORKDIR /root/',
-    'RUN chmod +x /root/build/ServerBuild',
-    '',
-    'RUN apt-get update && \\',
-    '    apt-get install -y ca-certificates && \\',
-    '    apt-get clean && \\',
-    '    update-ca-certificates',
-    '',
-    '# Documentation only; the port that matters is the one on the app version.',
-    'EXPOSE 7777/udp',
-    '',
-    'CMD ["/bin/bash", "-c", "env;/root/build/ServerBuild -batchmode -nographics $UNITY_COMMANDLINE_ARGS"]',
-  ].join('\n'),
-  unreal: [
-    'FROM ubuntu:22.04',
-    '',
-    'RUN apt-get update && \\',
-    '    apt-get install -y sudo jq curl && \\',
-    '    apt-get clean && \\',
-    '    rm -rf /var/lib/{apt,dpkg,cache,log}/',
-    '',
-    '# Unreal refuses to start as root, so run as an unprivileged user.',
-    'RUN useradd -rm -d /home/ubuntu -s /bin/bash -g root -G sudo -u 1000 m -o',
-    '',
-    'WORKDIR /app',
-    '# Contents of the packaged LinuxServer folder, plus StartServer.sh.',
-    'COPY --chown=m:sudo . /app',
-    '',
-    '# Scripts written on Windows carry CRLF endings, which break the shebang.',
-    "RUN sed -i 's/\\r$//' /app/StartServer.sh && chmod +x /app/StartServer.sh",
-    '',
-    'USER m',
-    'EXPOSE 7777/udp',
-    '',
-    'CMD ./StartServer.sh',
-  ].join('\n'),
-};
+/** Protocol a netcode transport needs on the wire, or undefined if unknown. */
+export function protocolForNetcode(netcode: string): string | undefined {
+  return NETCODE_PROTOCOL[netcode.toLowerCase()];
+}
 
 interface Instruction {
   line: number;
