@@ -52,6 +52,8 @@ const mock = http.createServer((req, res) => {
         return send(200, { versions: [{ name: 'build-42', is_active: true, ports: [{ port: 7777, protocol: 'UDP', name: 'gameport' }] }, { name: 'no-ports', is_active: true, ports: [] }], total_count: 2 });
       case 'GET /v1/app/ghost-game/versions':
         return send(404, { message: 'App not found' });
+      case 'GET /v1/deployments':
+        return send(200, { data: [{ request_id: '7e709a0d8efd', ready: true, fqdn: '7e709a0d8efd.pr.edgegap.net', start_time: '2026-09-30T12:00:00Z', tags: [] }], total_count: 1 });
       default:
         return send(500, { message: `mock has no route for ${route}` });
     }
@@ -143,6 +145,7 @@ check('unity: EXPOSE matches the port', g.dockerfile.includes('EXPOSE 7770/udp')
 check('nothing assumed when everything is given', !g.assumptions.some((a) => /Assumed/.test(a)), JSON.stringify(g.assumptions));
 check('returns ports for create_app_version', JSON.stringify(g.ports_for_create_app_version) === JSON.stringify([{ port: 7770, protocol: 'UDP', name: 'gameport' }]));
 check('local test command maps the UDP port', g.commands.test_locally.includes('-p 7770:7770/udp'));
+check('--platform is on build, not on run', /--platform linux\/amd64/.test(g.commands.build) && !g.commands.test_locally.includes('--platform'));
 
 g = json(await gen({ engine: 'unity' }));
 check('defaults are listed as assumptions to confirm', g.assumptions.some((a) => /ServerBuild/.test(a)) && g.assumptions.some((a) => /7777/.test(a)));
@@ -195,6 +198,27 @@ r = json(await c.callTool({ name: 'edgegap_list_registry_tags', arguments: { ima
 check('lists pushed tags (slash kept in path)', r.tags?.[0]?.tag === 'build-42' && r.tags[0].size_mb === 512);
 res = await c.callTool({ name: 'edgegap_list_registry_tags', arguments: { image_name: 'my-game-server' } });
 check('tag listing without project prefix is refused locally', res.isError === true);
+
+// ---------------------------------------------------------- deployments ----
+console.log('\nlist_deployments');
+const deploymentQuery = () => {
+  const call = calls.findLast((x) => x.url.startsWith('/v1/deployments'));
+  const q = new URL(call.url, 'http://x').searchParams.get('query');
+  return q === null ? null : JSON.parse(q);
+};
+calls.length = 0;
+r = json(await c.callTool({ name: 'edgegap_list_deployments', arguments: {} }));
+check('no filters sends no query', deploymentQuery() === null && r.deployments?.[0]?.request_id === '7e709a0d8efd');
+await c.callTool({ name: 'edgegap_list_deployments', arguments: {
+  filters: [{ field: 'application', operator: 'eq', value: 'my-game' }, { field: 'tags', operator: 'in', value: ['ci', 'test'] }],
+  order_by: [{ field: 'created_at', order: 'asc' }] } });
+check('filters and order_by sent as the documented JSON query', JSON.stringify(deploymentQuery()) === JSON.stringify({
+  filters: [{ field: 'application', operator: 'eq', value: 'my-game' }, { field: 'tags', operator: 'in', value: ['ci', 'test'] }],
+  order_by: [{ field: 'created_at', order: 'asc' }] }), JSON.stringify(deploymentQuery()));
+calls.length = 0;
+res = await c.callTool({ name: 'edgegap_list_deployments', arguments: {
+  filters: [{ field: 'status', operator: 'eq', value: 'ready' }, { field: 'status', operator: 'neq', value: 'error' }] } });
+check('two filters on one field are refused locally', res.isError === true && calls.length === 0);
 
 // --------------------------------------------------------------- relays ----
 console.log('\nrelays');

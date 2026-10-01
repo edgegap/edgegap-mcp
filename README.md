@@ -1,341 +1,277 @@
-# edgegap-mcp
+# Edgegap MCP Server
 
-An MCP server for Edgegap that lets a coding agent take a developer from "I
-have a headless server build" to "players are connected to it" without the
-developer reading the API reference: writing and checking the Dockerfile,
-pushing to Edgegap's registry, and deploying an authoritative dedicated server.
-Relays are there too, for games built host-client, but they are not the default
-— see [Dedicated servers vs relays](#dedicated-servers-vs-relays).
+Connect AI coding agents to Edgegap through our MCP server. Your agent can take a headless server build all the way to players connecting: write or check the Dockerfile, push the image to your private Edgegap registry, deploy an authoritative dedicated server close to players, and read logs when something breaks.
 
-Nineteen tools, hand-picked. Not generated from the OpenAPI spec — see
-[Design decisions](#design-decisions) for why.
+[![Install in Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/en/install-mcp?name=Edgegap&config=eyJ1cmwiOiJodHRwczovL21jcC5lZGdlZ2FwLmRldi9tY3AiLCJoZWFkZXJzIjp7IkF1dGhvcml6YXRpb24iOiIifX0%3D)
+[![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Edgegap_MCP-0098FF?style=flat-square&logo=visualstudiocode&logoColor=white)](https://vscode.dev/redirect/mcp/install?name=Edgegap&config=%7B%22type%22%3A%22http%22%2C%22url%22%3A%22https%3A%2F%2Fmcp.edgegap.dev%2Fmcp%22%2C%22headers%22%3A%7B%22Authorization%22%3A%22%22%7D%7D)
 
-## Install
+## 👉 Supported Features
 
-Two ways to run it. Pick based on how much you care about where your token
-goes — see [Where your token goes](#where-your-token-goes).
+> [!TIP]
+> **Using Unity, Unreal Engine, or Godot?** Our [Unity](https://docs.edgegap.com/unity), [Unreal Engine](https://docs.edgegap.com/unreal-engine), and [Godot](https://docs.edgegap.com/godot) guides and plugins remain the fastest path for those engines. The MCP server works alongside them, and on its own for any engine.
 
-### Remote endpoint
+Use our MCP server when:
 
-Hosted by Edgegap as a Cloudflare Worker. Nothing to install.
+* **Containerizing your game server** - your agent writes a Dockerfile for your build (or checks the one you have) against Edgegap's requirements, then pushes the image to your private Edgegap container registry.
+* **Deploying a dedicated server** - create an application and version, deploy close to your players, and get the connection address.
+* **Setting up matchmaking** - generate a matchmaker configuration that points at your deployed version, ready to upload in the dashboard.
+* **Running a host-client game** - create a relay session if your game is built with one player as host. See [Dedicated Servers or Relays?](#dedicated-servers-or-relays) first.
+* **Building a CI/CD pipeline** - test your deployments and teardown from a build system.
+* **Troubleshooting a game server issue** - inspect app versions and deployment status, read container logs, or reproduce a failed deployment.
+
+> [!WARNING]
+> Out of scope / not supported by MCP: creating or running a matchmaker (the MCP generates the configuration, you upload it in the dashboard); server browser; lobbies; managed clusters; private fleets; or billing.
+
+> [!NOTE]
+> If you need help, [please reach out to us over Discord](https://discord.gg/MmJf8fWjnt). For live games support see our [ticketing system](https://edgegap.atlassian.net/servicedesk/customer/portal/3).
+
+<a id="dedicated-servers-or-relays"></a>
+
+## ⚖️ Dedicated Servers or Relays?
+
+Edgegap can host your multiplayer game in two ways. **We recommend dedicated servers**, and so does our MCP server: your agent will default to a dedicated server and only use a relay when you've chosen a host-client setup.
+
+|                         | Dedicated server (recommended)                   | Relay                                                     |
+| ----------------------- | ------------------------------------------------ | --------------------------------------------------------- |
+| What Edgegap runs       | Your headless server build, close to players     | A traffic forwarder only, no game code                    |
+| Who runs the game       | The server                                       | One player's game (the host)                              |
+| Cheating                | Much harder, the server has authority            | The host can change anything                              |
+| Fairness                | Every player connects directly to the server     | The host has no latency, everyone else goes through two hops |
+| When the host leaves    | The match continues                              | The match ends, unless your game supports host migration  |
+| Performance limited by  | The server's allocated CPU and memory            | The host's PC and home internet upload                    |
+| You need                | A server build in a container image              | Netcode built as a listen server (host-client)            |
+
+> [!NOTE]
+> **No server image yet?** That's not a reason to choose relays. Your agent can write the Dockerfile for your build with `edgegap_generate_dockerfile`. Learn more about relays in [Distributed Relay](https://docs.edgegap.com/learn/distributed-relay).
+
+## 🚀 Installation
+
+MCP server installation is very simple:
+
+1. Install the MCP server for [Popular Agents](#popular-agents) or with [Custom Integration](#custom-integration).
+2. Generate and attach an API token for your agent to use with our MCP server.
+
+Generate (and view) your secret tokens for Edgegap API in [Dashboard - User Settings / Tokens](https://app.edgegap.com/user-settings?tab=tokens).
+
+Add your secret token with each API request as an HTTP header (include the word `token`):
+
+`Authorization: token xxxxxxxx-e458-4592-b607-c2c28afd8b62`
+
+> [!CAUTION]
+> **Do not integrate Edgegap API endpoints in game client, as your API token provides unlimited access to your account. See [Integration](https://docs.edgegap.com/docs/api/integration) for secure client-facing API endpoints and functions.**
+
+> [!TIP]
+> In case your secret tokens are compromised or leaked, delete and re-create them from dashboard.
+
+The token is organization-wide and cannot be scoped to one application. Read [DESIGN.md](DESIGN.md#where-your-token-goes) before giving it to an unattended agent.
+
+### Popular Agents
+
+Install Edgegap MCP server in your preferred agentic IDE with the **Cursor** or **VS Code** buttons at the top of this page, then add your token to the `Authorization` header.
+
+#### Claude Code
+
+```bash
+claude mcp add --transport http edgegap https://mcp.edgegap.dev/mcp \
+  -H "Authorization: token xxxxxxxx-e458-4592-b607-c2c28afd8b62" --scope user
+```
+
+#### ChatGPT Codex
+
+```bash
+codex mcp add edgegap --url https://mcp.edgegap.dev/mcp
+```
+
+#### claude.ai
+
+Add `https://mcp.edgegap.dev/mcp` as a custom connector and supply the same token.
+
+#### mcp.json
+
+Most agentic IDEs also support integration by pasting JSON configuration:
 
 ```json
 {
-  "mcpServers": {
-    "edgegap": {
-      "type": "http",
-      "url": "https://mcp.edgegap.dev/mcp",
-      "headers": { "Authorization": "token YOUR_API_TOKEN" }
+    "mcpServers": {
+        "Edgegap": {
+            "type": "http",
+            "url": "https://mcp.edgegap.dev/mcp",
+            "headers": {
+                "Authorization": "token xxxxxxxx-e458-4592-b607-c2c28afd8b62"
+            }
+        }
     }
-  }
 }
 ```
 
-Also works as a custom connector in claude.ai: add
-`https://mcp.edgegap.dev/mcp` and supply the same token.
+### Custom Integration
 
-### Local
+Install remote Edgegap MCP server in your agent's virtualized environment (never in your project!):
 
-Runs on your own machine, spawned by your editor. One line in your MCP client
-config, nothing to clone, nothing to build.
+**Node, using the `mcp-remote` npx package**
+
+```json
+{
+  "command": "npx",
+  "args": ["-y", "mcp-remote", "https://mcp.edgegap.dev/mcp", "--transport", "http-only"]
+}
+```
+
+**Python, using the `mcp-proxy` uvx package**
+
+```json
+{
+  "command": "uvx",
+  "args": ["mcp-proxy", "--transport", "streamablehttp", "https://mcp.edgegap.dev/mcp"]
+}
+```
+
+### Local Server
+
+To keep your API token on your own machine, run the server locally instead. Leave the token out and your agent asks you for it on first use, holding it in memory only for that session:
 
 ```json
 {
   "mcpServers": {
-    "edgegap": {
+    "Edgegap": {
       "command": "npx",
-      "args": ["-y", "@edgegap/mcp"]
+      "args": ["-y", "@edgegap/mcp"],
+      "env": { "EDGEGAP_API_TOKEN": "xxxxxxxx-e458-4592-b607-c2c28afd8b62" }
     }
   }
 }
 ```
 
-Works in Claude Code, Cursor, Codex, and VS Code. Pin a version in production
-(`@edgegap/mcp@0.1.5`) rather than floating on latest.
+Needs Node 18+. Pin a version in production (`@edgegap/mcp@0.3.0`) rather than floating on latest. Registered in the official MCP registry as `dev.edgegap/mcp`.
 
-Registered in the official MCP registry as `dev.edgegap/mcp`.
-
-> **Node version:** the local server needs Node 18+. Deploying your own copy of
-> the Cloudflare Worker needs Node 22+, because `wrangler` requires it.
-
-## Where your token goes
-
-This differs by mode, and the difference is the reason both modes exist.
-
-**Local.** The server runs as a process on your own computer. The first tool
-call asks you for a token, shows what it authorises, and requires an explicit
-acknowledgement before accepting it. Where that token then lives, exhaustively:
-
-- one variable in that process's memory, for the life of your editor session
-
-That is the whole list. Not on disk. Not in a config file. Not in logs. Not on
-any Edgegap server — the only thing sent to Edgegap is the API call itself,
-exactly as if you had run `curl`. Closing your editor revokes this server's
-access completely.
-
-**Remote.** Your token is sent to `mcp.edgegap.dev` on every request and
-forwarded from there to the Edgegap API. It transits infrastructure Edgegap
-operates. The worker holds it for the life of the request and does not persist
-it, but that is a "we don't store it" claim rather than a "we never see it"
-claim. The two are different, and only local mode makes the second one.
-
-Generate a token at <https://app.edgegap.com/user-settings?tab=tokens>.
-
-In local mode, setting `EDGEGAP_API_TOKEN` takes precedence over the prompt,
-for CI and for clients that cannot show prompts. Do not pass a token as a
-command-line argument — arguments are visible to other processes via `ps`, and
-the server warns if it detects one.
-
-**Which to use.** Remote for a first try, a demo, or a supervised session where
-setup friction matters more than custody. Local for anything unattended,
-anything in an organization with a live game in it, and anything where you
-would rather not extend trust you don't have to. The guardrails described below
-exist only in local mode.
-
-## Read this before connecting an agent
-
-**The Edgegap API token cannot be scoped.** One token authorises every
-application, every version, every running deployment, and your usage across the
-whole organization. There is no deploy-only token and no per-application token.
-
-Consequences worth being deliberate about:
-
-- An agent holding this token can stop production deployments, not just the
-  test ones it created.
-- Prompt injection reaching the agent — from a repo file, an issue, a fetched
-  page — reaches the token too.
-- Anything the agent logs, echoes, or sends to a model provider is a place the
-  token could end up. This server does not log it, but it cannot control what
-  the rest of the agent does.
-- On the remote endpoint, the same unscoped token is additionally handled by
-  Edgegap's worker on every call.
-
-Recommended setup, in decreasing order of caution:
-
-| Situation | Setup |
-| --- | --- |
-| Unattended or autonomous agent | Local mode. Separate non-production organization, plus `EDGEGAP_READ_ONLY=1` |
-| Supervised agent, live game in the org | Local mode. `EDGEGAP_APP_ALLOWLIST` scoped to the app being worked on, plus `EDGEGAP_MAX_DURATION_MINUTES`. Read [Scope of the allowlist](#scope-of-the-allowlist) first — deployments that are already running are not covered |
-| Solo developer, no production workload | Either mode. Defaults are fine; revoke the token when finished |
-
-The allowlist and read-only flag are enforced in the local server, which means
-they protect against an agent that makes a mistake, not against one that has
-been compromised into calling the API directly. They narrow the blast radius;
-they do not remove it.
-
-### Scope of the allowlist
-
-`EDGEGAP_APP_ALLOWLIST` is enforced by the five tools that take an application
-name: `edgegap_create_app`, `edgegap_list_app_versions`,
-`edgegap_create_app_version`, `edgegap_deploy`, and
-`edgegap_build_matchmaker_config`.
-
-Relay sessions and the container registry belong to the organization, not to an
-application, so the relay and registry tools are not covered by it either.
-
-It is **not** enforced by the five tools keyed on `request_id`:
-`edgegap_get_deployment`, `edgegap_wait_for_deployment`,
-`edgegap_list_deployments`, `edgegap_stop_deployment`, and
-`edgegap_get_deployment_logs`. An agent running with an allowlist set can list
-every deployment in the organization and then inspect, read the logs of, or stop
-any of them — including deployments belonging to applications outside the list.
-
-So the allowlist scopes what an agent can **create and deploy into**, not what it
-can **touch once running**. That is narrower than earlier versions of this
-document implied.
-
-For a stronger guarantee today, use `EDGEGAP_READ_ONLY=1`, which never registers
-the mutating tools at all, or point the agent at a separate non-production
-organization. Both are unaffected by this gap.
-
-Reported by Syed Anas Mohiuddin, September 2026.
-
-### Environment variables
-
-These configure the local server. On the remote endpoint they are set by
-Edgegap and cannot be changed per developer — if you need any of them, run
-locally.
+The local server can also limit what an agent can do. These variables have no effect on the hosted endpoint at `mcp.edgegap.dev`:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `EDGEGAP_API_TOKEN` | *(prompted)* | API token. Optional — omit it and the developer is asked at first use. The `token ` prefix is added for you. |
-| `EDGEGAP_READ_ONLY` | `0` | Set to `1` and the eight mutating tools (●, below) are never registered. The agent cannot see them, so it cannot be talked into calling them. |
-| `EDGEGAP_APP_ALLOWLIST` | *(empty)* | Comma-separated application names. When set, the five application-keyed tools refuse to touch anything else. Does **not** scope the five `request_id`-keyed tools — see [Scope of the allowlist](#scope-of-the-allowlist). |
-| `EDGEGAP_MAX_DURATION_MINUTES` | `60` | Ceiling on `max_duration` the agent may set on a version. Caps runaway cost from an unattended agent. |
+| `EDGEGAP_API_TOKEN` | *(prompted)* | API token. Optional: omit it and you're asked at first use. The `token ` prefix is added for you. Never pass it as a command-line argument. |
+| `EDGEGAP_READ_ONLY` | `0` | Set to `1` and the eight mutating tools are never registered, so the agent cannot be talked into calling them. |
+| `EDGEGAP_APP_ALLOWLIST` | *(empty)* | Comma-separated application names. Limits what the agent can create and deploy into, not what it can touch once running. See [DESIGN.md](DESIGN.md#scope-of-the-allowlist). |
+| `EDGEGAP_MAX_DURATION_MINUTES` | `60` | Ceiling on `max_duration` the agent may set on a version. |
 | `EDGEGAP_TIMEOUT_MS` | `30000` | Per-request HTTP timeout. |
 
-## Dedicated servers vs relays
+## 🧰 Tools
 
-Edgegap hosts multiplayer games two ways, and they are not interchangeable.
-**This server recommends a dedicated server by default**, and tells the agent so
-in its instructions, in the tool descriptions, and in every relay result.
+Your agent picks the right tool from your request. You don't need to name them, but knowing what's available helps you ask. Tools marked ● change something in your account and are hidden when `EDGEGAP_READ_ONLY=1`.
 
-| | Dedicated (authoritative) server | Relay |
-| --- | --- | --- |
-| What Edgegap runs | Your headless server build, near the players | Only a traffic forwarder; no game code |
-| Who owns the game state | The server | One player's game (the host) |
-| Cheating | Much harder: the server decides | The host can change anything |
-| Fairness | Every player is one hop from the server | The host has zero latency; everyone else has two hops |
-| Host quits | Match continues | Match ends, unless the game implements host migration |
-| Limited by | The server's allocated CPU and memory | The host's PC and home upload bandwidth |
-| Needs | A server image (`edgegap_generate_dockerfile` writes the Dockerfile) | Netcode built as a listen server (host-client) |
-| Tools | `edgegap_deploy`, matchmaker | `edgegap_create_relay_session` |
+### Before Your First Deployment
 
-Agents left alone tend to pick relays because they need no server image. That
-saves the agent work, not the developer's game, so the relay tool tells the
-agent to use it only when the developer has chosen host-client, or the netcode
-is already a listen server and moving to a dedicated server is not an option —
-and to ask when that is unclear.
+| Tool | What it does |
+| --- | --- |
+| `edgegap_generate_dockerfile` | Writes a Dockerfile for your server build: your build folder, server binary or start script, ports, and launch arguments, with the right headless flags (Unity `-batchmode -nographics`, Godot `--headless`), a non-root user for Unreal, and matching ports. Lists anything it had to assume so your agent can confirm it. Works for Unity, Unreal Engine, Godot, and any other engine. |
+| `edgegap_validate_server_config` | Checks an existing Dockerfile, ports, resources, and image tag before you build. Catches ARM or Windows images (Edgegap runs `linux/amd64`), Unreal servers running as root, missing Unity `-batchmode -nographics`, servers bound to `localhost`, ports that don't match your netcode transport, and the `latest` tag. |
+| `edgegap_get_registry_credentials` ● | Returns push credentials for your private Edgegap container registry, with the exact `docker login`, build, and push commands. No Docker Hub account needed. |
+| `edgegap_list_registry_tags` | Confirms your image push landed before you register it. |
 
-## Tools
+### Dedicated Servers (Recommended)
 
-Nineteen tools, grouped by where they fall on the path. The same set in both
-modes; `EDGEGAP_READ_ONLY=1` hides the ● ones.
+| Tool | What it does |
+| --- | --- |
+| `edgegap_list_apps` | Lists your applications. |
+| `edgegap_create_app` ● | Creates an application. |
+| `edgegap_list_app_versions` | Lists versions with their image, resources, and ports. |
+| `edgegap_create_app_version` ● | Registers a container image as a deployable version. |
+| `edgegap_deploy` ● | Deploys an authoritative dedicated server close to your players. |
+| `edgegap_wait_for_deployment` | Waits until the server is ready and returns the connection address. |
+| `edgegap_get_deployment` | Reads a deployment's status. |
+| `edgegap_list_deployments` | Lists running deployments, filtered by application, version, status, tags and more, and sorted by age. Finds servers left running. See [Filter Deployments](https://docs.edgegap.com/learn/orchestration/deployments#filter-deployments). |
+| `edgegap_get_deployment_logs` | Reads container logs and crash details. |
+| `edgegap_stop_deployment` ● | Stops one deployment. |
 
-**Before the first deploy** — getting a headless build into a correct image and
-into a registry, which is where agent-driven onboarding actually stalls.
+### Matchmaking
 
-| Tool | Mutating | What it's for |
-| --- | --- | --- |
-| `edgegap_generate_dockerfile` | | Write a Dockerfile for this project's build: its build folder, binary or start script, ports and launch arguments, with the right headless flags, non-root user (Unreal), CRLF fix for start scripts, and matching EXPOSE lines. Lists anything it had to assume, returns the ports for `edgegap_create_app_version`, and is checked against the validator before it is returned. Unity, Unreal, Godot, or any other engine. No API call. |
-| `edgegap_validate_server_config` | | Static check of an existing Dockerfile, ports, resources and tag against Edgegap's requirements: linux/amd64, Unreal not running as root, Unity `-batchmode -nographics`, loopback binds, EXPOSE vs. version ports, protocol vs. netcode transport, `latest` tags. Returns a known-good Dockerfile for the engine when the one checked fails. No API call. |
-| `edgegap_get_registry_credentials` | ● | Push credentials for the org's private `registry.edgegap.com` project, plus the exact login/build/push commands and the values to pass to `edgegap_create_app_version`. Provisions the project on first use. |
-| `edgegap_list_registry_tags` | | Confirm a pushed tag landed before registering it. |
+| Tool | What it does |
+| --- | --- |
+| `edgegap_build_matchmaker_config` | Generates a matchmaker configuration (teams, team size, optional latency rules and expansions) and checks that the version it deploys exists. Upload the result in the dashboard to create your matchmaker, which starts a dedicated server for each match. |
 
-**Dedicated servers** — the recommended way to host a match.
+Learn more about the configuration in [Matchmaking](https://docs.edgegap.com/learn/matchmaking).
 
-| Tool | Mutating | What it's for |
-| --- | --- | --- |
-| `edgegap_list_apps` | | Orient before doing anything. Prevents duplicate applications. |
-| `edgegap_create_app` | ● | Create the container for versions. |
-| `edgegap_list_app_versions` | | Find a deployable version, or copy settings from a working one. |
-| `edgegap_create_app_version` | ● | Register a container image with CPU, memory, and ports. |
-| `edgegap_deploy` | ● | Start one authoritative server near specified players. |
-| `edgegap_get_deployment` | | Single status read. |
-| `edgegap_wait_for_deployment` | | Poll to ready with backoff, then return the connection address. |
-| `edgegap_list_deployments` | | Find orphaned servers from earlier sessions. |
-| `edgegap_stop_deployment` | ● | Graceful SIGTERM, one deployment at a time. |
-| `edgegap_get_deployment_logs` | | Container output and crash exit code after a failure. |
+### Relays (Host-Client Games Only)
 
-**Matchmaking** — puts players into dedicated servers.
+A relay is not a game server: it forwards traffic while one player's game hosts the match. See [Dedicated Servers or Relays?](#dedicated-servers-or-relays).
 
-| Tool | Mutating | What it's for |
-| --- | --- | --- |
-| `edgegap_build_matchmaker_config` | | Generate a basic matchmaker configuration (teams, team size, optional latency rule and expansions) checked against the application version it deploys. Edgegap has no API for creating a matchmaker, so the developer uploads the result in the dashboard. |
+| Tool | What it does |
+| --- | --- |
+| `edgegap_create_relay_session` ● | Creates a relay session for your players and returns the relay address and each player's authorization token. |
+| `edgegap_get_relay_session` | Reads a relay session. |
+| `edgegap_authorize_relay_user` ● | Adds a player who joins later. |
+| `edgegap_delete_relay_session` ● | Closes a relay session. |
 
-**Relays** — only for games built host-client; not a game server. See
-[Dedicated servers vs relays](#dedicated-servers-vs-relays).
+> [!WARNING]
+> Deployments and relay sessions are billed while they run. Ask your agent to stop test deployments and delete test relay sessions when it's done.
 
-| Tool | Mutating | What it's for |
-| --- | --- | --- |
-| `edgegap_create_relay_session` | ● | Open a relay session for a set of player IPs, wait until it is ready, and return the relay address, ports, and per-player authorization tokens, plus the trade-offs to raise with the developer. |
-| `edgegap_get_relay_session` | | Re-read a session. |
-| `edgegap_authorize_relay_user` | ● | Add a player who joins after the session was created. |
-| `edgegap_delete_relay_session` | ● | Close a session. |
+### Example Prompts
 
-## Design decisions
+* *"Write a Dockerfile for my Unity server build, then push it and deploy a server near me."*
+* *"Check my Dockerfile for Edgegap and fix any problems."*
+* *"Create a matchmaker config for 2v2 matches on my latest version."*
+* *"My deployment failed. Read the logs and tell me why."*
+* *"My game uses host-client networking. Set up an Edgegap relay for two players."*
 
-**Curated, not generated.** The Edgegap API has roughly sixty operations.
-Auto-generating one tool per operation puts all sixty descriptions into the
-agent's context on every turn and measurably degrades tool selection. These
-cover the path that converts a new developer — including the steps before the
-first deploy, which are where that path used to end.
+## 🚨 Troubleshooting
 
-**`wait_for_deployment` is a tool, not a loop.** Left to itself an agent will
-call a status endpoint in a tight loop, burn turns, and give up early. Folding
-the polling and backoff into one call removes the most common failure in
-agent-driven deploys.
+Review common error codes and learn how to unlock your integration.
 
-**Errors are written for self-correction.** A 424 comes back saying the image
-could not be pulled and which fields to check. A 422 says to try different
-coordinates or lower the resource request. The agent can act on these without a
-round trip to the human.
+### 401 Unauthorized
 
-**Local validation before the wire.** The memory-to-CPU ratio and the missing
-player location are caught here rather than surfacing as an opaque 400.
-`edgegap_validate_server_config` extends this to the image itself, before a
-build and push are spent discovering a problem.
+Your MCP integration is most likely not including the Authorization header correctly.
 
-**Generated Dockerfiles are validated before they are returned.**
-`edgegap_generate_dockerfile` runs its own output through
-`edgegap_validate_server_config` and refuses to return anything that fails, so
-the two tools cannot disagree. Every value it writes into the Dockerfile (paths,
-binary name, launch arguments) is restricted to characters that cannot start a
-new instruction or escape into a shell. The Unity template leaves out the `env`
-dump from Edgegap's plugin Dockerfile, which writes hidden environment variables
-into container logs.
+### 403 Forbidden
 
-**The same instructions on both transports.** The hosted Worker used to start
-without server instructions, so hosted agents never saw the golden path. Both
-entry points now use `serverInstructions()` from `src/tools.ts`.
+Your MCP integration is likely using the template token or a deleted token. Please validate that the token value used by your integration matches exactly the token displayed in dashboard.
 
-**The registry token is handed to the agent; the API token never is.** The agent
-has to run `docker login`, so the registry token is returned in the tool result.
-It is scoped to the org's registry project, and the returned command reads it
-from an environment variable over `--password-stdin` so it stays off command
-lines and out of shell history. The tool is hidden in read-only mode.
+### 424 Image Could Not Be Pulled
 
-**The registry credentials endpoint is not in the public spec.** It is
-`GET /v1/wizard/registry-credentials`, the same call the Unity plugin makes,
-preceded by `POST /v1/wizard/init-quick-start` when the project is not yet
-provisioned.
+Edgegap could not pull your container image. Check the repository, image name, and tag, and that the tag was pushed (ask your agent to list registry tags). For images in the Edgegap registry, the image name must include your project, e.g. `my-project/my-game-server`.
 
-**Bulk operations are deliberately absent.** `stop` takes one `request_id`.
-There is no bulk-stop tool, because an agent with a filter expression and a bug
-can stop a production fleet.
+### Registry Credentials Unavailable
 
-**Both a hosted endpoint and a local package.** The hosted endpoint removes
-every step between finding this server and calling a tool, which is where most
-developers drop out. The local package is the only way to run the server
-without extending custody of an unscoped token to a third party, including us.
-Neither one dominates the other, so both ship. See `worker/DECISION.md` for the
-longer version.
+If your agent can't retrieve registry credentials, request them in the [dashboard](https://app.edgegap.com) under **Container Registry**, or push to another registry Edgegap can pull from (Docker Hub, GitHub, AWS ECR, GCP, GitLab). See [External Registries](https://docs.edgegap.com/docs/tools-and-integrations/docker/external-registries).
 
-## Scope
+### Server Starts Locally but Not on Edgegap
 
-Not exposed, on purpose: private fleets, smart fleets, endpoint storage,
-ACL/whitelist entries, deployment tags, metrics, registry tag deletion, DNS
-configuration, and matchmaker lifecycle (start, stop, delete).
+Ask your agent to validate your server configuration, or to generate a new Dockerfile. The most common causes are an image built on Apple Silicon without `docker build --platform linux/amd64`, a server listening on a different port than the version exposes, or a UDP transport configured as TCP.
 
-These belong to studios already operating on the platform, not to a developer
-getting a first game online. Dockerfile generation and validation, registry
-push, a basic matchmaker config, and relays were moved in scope because agents
-hit them before the first deploy, not after.
+### Other API Errors
 
-## Known limitation: asking for the token at all
+Please consult our [API Reference](https://docs.edgegap.com/docs/api) for possible error responses for individual API endpoints.
 
-This applies to local mode, where the token is collected through elicitation
-rather than read from config.
+> [!NOTE]
+> If you need help, [please reach out to us over Discord](https://discord.gg/MmJf8fWjnt). For live games support see our [ticketing system](https://edgegap.atlassian.net/servicedesk/customer/portal/3).
 
-The MCP specification says servers should not use elicitation to collect
-sensitive data, and an API token is sensitive. This server does it anyway,
-because requiring a token in a config file before anything works is the largest
-drop in the onboarding funnel, and the whole point of the server is to remove
-setup friction.
+## 🛠️ Self-Hosting
 
-That is a deliberate trade rather than a pattern to copy. What makes it
-defensible is the set of mitigations in `src/auth.ts` — memory-only storage,
-plain-language disclosure, required acknowledgement, redaction from all output,
-and the environment variable always winning when present. Removing any of them
-breaks the trade.
+The hosted endpoint at `mcp.edgegap.dev` runs as a Cloudflare Worker (see [worker/INSTALL.md](worker/INSTALL.md)). To run the same stateless HTTP server on your own infrastructure, use the Docker image:
 
-The real fix is on Edgegap's side and would improve both modes: scoped,
-revocable, deploy-only credentials, issued through OAuth rather than pasted as
-a secret. Until those exist, the interactive prompt is a workaround and is
-labelled as one in the code.
+```bash
+docker build -t edgegap-mcp .
+docker run --rm -p 8080:8080 edgegap-mcp
+```
+
+Clients connect to `http://<host>:8080/mcp` with their own `Authorization` header, the same way they connect to the hosted endpoint. The image holds no credential, and `/health` answers without one. `PORT`, `HOST`, `EDGEGAP_READ_ONLY`, `EDGEGAP_APP_ALLOWLIST` and `EDGEGAP_MAX_DURATION_MINUTES` apply. Read [worker/DECISION.md](worker/DECISION.md) before exposing it beyond a private network.
+
+Every push to `main` builds the image and pushes it to the Edgegap container registry as `registry.edgegap.com/<project>/edgegap-mcp`, tagged `main` and `sha-<commit>` (plus the version on `v*` tags). See [.github/workflows/docker.yml](.github/workflows/docker.yml) for the repository variables and secrets it needs.
 
 ## Development
 
 ```bash
-npm run typecheck
-node smoke.mjs      # handshake, tool registration, read-only mode
-node guards.mjs     # local validation and allowlist enforcement
-node elicit.mjs     # token prompt: accept, refuse acknowledgement, decline, no support
-node newtools.mjs   # validator, registry, relay, matchmaker tools against a local mock API
+npm ci
+npm run build
+npm test                  # mock-API tests; none reach Edgegap
+npm run typecheck:worker
 ```
 
-None of these reach Edgegap. `newtools.mjs` points `EDGEGAP_BASE_URL` at a
-mock server on localhost. `elicit.mjs` asserts that the prompt states
-the org-wide scope, that the acknowledgement is required, that the token never
-appears in tool output, and that declining produces a stop-and-report message
-rather than a retry loop.
+| Test | Covers |
+| --- | --- |
+| `test/smoke.mjs` | Handshake, tool registration, read-only mode |
+| `test/guards.mjs` | Local validation and allowlist enforcement |
+| `test/elicit.mjs` | Token prompt: accept, refuse acknowledgement, decline, no support |
+| `test/newtools.mjs` | Validator, Dockerfile generator, registry, deployments, relay and matchmaker tools against a local mock API |
+| `test/http.mjs` | Self-hosted HTTP server: discovery without a token, per-request tokens, foreign credentials |
+| `test/live-check.mjs` | Not in `npm test`. Runs against the real API with a token from a non-production organization |
+
+Design decisions, the security model, and what's deliberately out of scope are in [DESIGN.md](DESIGN.md).

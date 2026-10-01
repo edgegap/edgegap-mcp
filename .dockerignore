@@ -1,0 +1,12 @@
+node_modules
+dist
+.git
+.github
+.wrangler
+worker
+test
+spec
+*.md
+.env
+.env.*
+.dev.vars

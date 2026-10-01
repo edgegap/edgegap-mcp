@@ -40,14 +40,13 @@ import { EdgegapClient } from '../src/client.js';
 import { StaticTokenProvider } from '../src/auth.js';
 import { registerTools, serverInstructions } from '../src/tools.js';
 import type { Config } from '../src/config.js';
+import { extractToken, unavailableMessage } from '../src/hosted.js';
 
 export interface Env {
   EDGEGAP_APP_ALLOWLIST?: string;
   EDGEGAP_MAX_DURATION_MINUTES?: string;
   EDGEGAP_READ_ONLY?: string;
 }
-
-const TOKEN_URL = 'https://app.edgegap.com/user-settings?tab=tokens';
 
 /**
  * Config for a single request. envToken is always undefined: the hosted server
@@ -69,72 +68,6 @@ function configForRequest(env: Env): Config {
   };
 }
 
-/**
- * Edgegap API tokens are UUIDs. The strict form is the real test; the loose
- * form exists so a future token format does not silently stop working here.
- *
- * The point of this check is NOT security — an invalid token fails upstream
- * anyway. It is to tell a foreign credential apart from an Edgegap one BEFORE
- * relaying it, so the developer gets "your client sent its own token" instead
- * of Edgegap's generic 401. JWTs are the common case: they are what MCP clients
- * mint for themselves, and they always carry dots, which a UUID never does.
- */
-const STRICT_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const LOOSE_OPAQUE = /^[A-Za-z0-9_-]{16,200}$/;
-
-function looksLikeEdgegapToken(value: string): boolean {
-  if (STRICT_UUID.test(value)) return true;
-  return LOOSE_OPAQUE.test(value);
-}
-
-type TokenResult =
-  | { token: string; problem?: undefined }
-  | { token: undefined; problem: 'absent' | 'foreign' };
-
-function extractToken(request: Request): TokenResult {
-  const header = request.headers.get('Authorization');
-  if (!header) return { token: undefined, problem: 'absent' };
-
-  const value = header.replace(/^Bearer\s+/i, '').replace(/^token\s+/i, '').trim();
-  if (!value) return { token: undefined, problem: 'absent' };
-  if (!looksLikeEdgegapToken(value)) return { token: undefined, problem: 'foreign' };
-
-  return { token: value };
-}
-
-/**
- * The message an agent sees when it calls a tool without a usable credential.
- * It is the only place the developer is told what to do, so it says it in full
- * rather than pointing at docs.
- */
-function unavailableMessage(problem: 'absent' | 'foreign'): string {
-  const common =
-    `Get a token at ${TOKEN_URL}. It is used for the request and discarded — ` +
-    'never stored. Edgegap tokens are organization-wide and cannot be scoped, ' +
-    'so prefer the local server (npx -y @edgegap/mcp), which keeps the token ' +
-    'on your own machine and never sends it through Edgegap infrastructure.';
-
-  if (problem === 'foreign') {
-    return (
-      'The Authorization header on this connection does not contain an Edgegap ' +
-      'API token — it looks like a credential your MCP client issued for ' +
-      'itself. That happens with clients that connect by URL alone and have no ' +
-      'field for a custom header. This server was not going to relay it to the ' +
-      'Edgegap API, because the only thing that produces is a confusing 401.\n\n' +
-      'If your client cannot attach your own Edgegap token to the connection, ' +
-      'it cannot use this hosted server: run the local one instead ' +
-      '(npx -y @edgegap/mcp).\n\n' +
-      common
-    );
-  }
-
-  return (
-    'No Edgegap API token on this request. Send it as an Authorization header ' +
-    'on the MCP connection.\n\n' +
-    common
-  );
-}
-
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -150,12 +83,12 @@ export default {
       return new Response('Not found', { status: 404 });
     }
 
-    const { token, problem } = extractToken(request);
+    const { token, problem } = extractToken(request.headers.get('Authorization'));
     const config = configForRequest(env);
 
     const handler = createMcpHandler(() => {
       const server = new McpServer(
-        { name: 'edgegap', version: '0.2.2' },
+        { name: 'edgegap', version: '0.3.0' },
         { instructions: serverInstructions('hosted') }
       );
 

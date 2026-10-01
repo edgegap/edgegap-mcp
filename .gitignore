@@ -5,5 +5,5 @@ node_modules/
 .env.local
 .DS_Store
 .dev.vars
-server.json
 package.json package-lock.json
+dist/
