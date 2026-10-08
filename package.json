@@ -1,7 +1,7 @@
 {
   "name": "@edgegap/mcp",
   "mcpName": "dev.edgegap/mcp",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Check, push, and deploy game servers on Edgegap from your coding agent, with relays for P2P games. Runs locally; your API token never leaves your machine.",
   "scripts": {
     "prebuild": "rm -rf dist",
@@ -35,13 +35,13 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "@modelcontextprotocol/server": "^2.0.0",
-    "agents": "^0.23.0",
     "zod": "^4.6.2"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260911.1",
+    "@modelcontextprotocol/server": "^2.0.0",
     "@types/node": "^22.20.2",
+    "agents": "^0.23.0",
     "typescript": "^7.0.2",
     "wrangler": "^4.131.1"
   },

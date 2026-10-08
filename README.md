@@ -82,9 +82,24 @@ claude mcp add --transport http edgegap https://mcp.edgegap.dev/mcp \
 codex mcp add edgegap --url https://mcp.edgegap.dev/mcp
 ```
 
-#### claude.ai
+#### Claude Desktop and claude.ai
 
-Add `https://mcp.edgegap.dev/mcp` as a custom connector and supply the same token.
+Custom connectors in claude.ai and Claude Desktop cannot send an `Authorization` header, so the hosted endpoint never receives your token from them: the connector shows as connected, but every tool call fails. Use the [Local Server](#local-server) instead.
+
+In Claude Desktop, open **Settings → Developer → Edit Config** and add the local server to `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "edgegap": {
+      "command": "npx",
+      "args": ["-y", "@edgegap/mcp"]
+    }
+  }
+}
+```
+
+Leave the token out and you're asked for it on first use. claude.ai in the browser can't run a local server, so it can't use Edgegap MCP until the hosted endpoint supports OAuth.
 
 #### mcp.json
 
@@ -142,7 +157,7 @@ To keep your API token on your own machine, run the server locally instead. Leav
 }
 ```
 
-Needs Node 18+. Pin a version in production (`@edgegap/mcp@0.3.2`) rather than floating on latest. Registered in the official MCP registry as `dev.edgegap/mcp`.
+Needs Node 18+. Pin a version in production (`@edgegap/mcp@0.3.3`) rather than floating on latest. Registered in the official MCP registry as `dev.edgegap/mcp`.
 
 The local server can also limit what an agent can do. These variables have no effect on the hosted endpoint at `mcp.edgegap.dev`:
 
@@ -150,7 +165,7 @@ The local server can also limit what an agent can do. These variables have no ef
 | --- | --- | --- |
 | `EDGEGAP_API_TOKEN` | *(prompted)* | API token. Optional: omit it and you're asked at first use. The `token ` prefix is added for you. Never pass it as a command-line argument. |
 | `EDGEGAP_READ_ONLY` | `0` | Set to `1` and the eight mutating tools are never registered, so the agent cannot be talked into calling them. |
-| `EDGEGAP_APP_ALLOWLIST` | *(empty)* | Comma-separated application names. Limits what the agent can create and deploy into, not what it can touch once running. See [DESIGN.md](DESIGN.md#scope-of-the-allowlist). |
+| `EDGEGAP_APP_ALLOWLIST` | *(empty)* | Comma-separated application names. Limits what the agent can create and deploy into. Reading (listing apps and versions) is not limited, and neither is touching deployments once running. See [DESIGN.md](DESIGN.md#scope-of-the-allowlist). |
 | `EDGEGAP_MAX_DURATION_MINUTES` | `60` | Ceiling on `max_duration` the agent may set on a version. |
 | `EDGEGAP_TIMEOUT_MS` | `30000` | Per-request HTTP timeout. |
 
@@ -173,20 +188,20 @@ Your agent picks the right tool from your request. You don't need to name them, 
 | --- | --- |
 | `edgegap_list_apps` | Lists your applications. |
 | `edgegap_create_app` ● | Creates an application. |
-| `edgegap_list_app_versions` | Lists versions with their image, resources, and ports. |
-| `edgegap_create_app_version` ● | Registers a container image as a deployable version. |
+| `edgegap_list_app_versions` | Lists versions with their image, resources, ports (with TLS Upgrade), and whether a registry login is set. |
+| `edgegap_create_app_version` ● | Registers a container image as a deployable version. Supports TLS Upgrade on WS and HTTP ports, which browser (WebGL) clients need for `wss://`. |
 | `edgegap_deploy` ● | Deploys an authoritative dedicated server close to your players. |
 | `edgegap_wait_for_deployment` | Waits until the server is ready and returns the connection address. |
 | `edgegap_get_deployment` | Reads a deployment's status. |
 | `edgegap_list_deployments` | Lists running deployments, filtered by application, version, status, tags and more, and sorted by age. Finds servers left running. See [Filter Deployments](https://docs.edgegap.com/learn/orchestration/deployments#filter-deployments). |
-| `edgegap_get_deployment_logs` | Reads container logs and crash details. |
+| `edgegap_get_deployment_logs` | Reads container logs and crash details while the deployment runs. After it stops, logs are only kept if Endpoint Storage was set up. |
 | `edgegap_stop_deployment` ● | Stops one deployment. |
 
 ### Matchmaking
 
 | Tool | What it does |
 | --- | --- |
-| `edgegap_build_matchmaker_config` | Generates a matchmaker configuration (teams, team size, optional latency rules and expansions) and checks that the version it deploys exists. Upload the result in the dashboard to create your matchmaker, which starts a dedicated server for each match. |
+| `edgegap_build_matchmaker_config` | Generates a matchmaker configuration (teams, team size, optional latency rules and expansions) and checks that the version it deploys exists. Set `allowed_cors_origins` for browser (WebGL) clients. Upload the result in the dashboard to create your matchmaker, which starts a dedicated server for each match. |
 
 Learn more about the configuration in [Matchmaking](https://docs.edgegap.com/learn/matchmaking).
 

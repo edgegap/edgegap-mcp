@@ -46,6 +46,8 @@ export interface PortInput {
   port: number;
   protocol: string;
   name?: string;
+  /** Edgegap terminates TLS on the port (wss/https). WS and HTTP only. */
+  tls_upgrade?: boolean;
 }
 
 export interface ServerConfigInput {
@@ -256,6 +258,10 @@ export function validateServerConfig(input: ServerConfigInput) {
           'Give every port a distinct name, e.g. "gameport" and "webport".');
       }
       seenNames.add(name);
+      if (p.tls_upgrade && proto !== 'WS' && proto !== 'HTTP') {
+        err('tls-wrong-protocol', `ports[${idx}] has tls_upgrade on a ${p.protocol} port. Edgegap only offers TLS Upgrade on WS and HTTP ports.`,
+          'Use protocol "WS" for a WebSocket server, or drop tls_upgrade.');
+      }
     });
 
     if (input.netcode) {
@@ -268,6 +274,15 @@ export function validateServerConfig(input: ServerConfigInput) {
       })) {
         err('netcode-protocol', `${input.netcode} speaks ${expected}, but no configured port uses ${expected}. Clients will time out connecting.`,
           `Set the game port's protocol to ${expected}.`);
+      } else if (expected === 'WS') {
+        // WebSocket transports are what browser (WebGL) builds use, and a
+        // browser on an https page refuses plain ws://.
+        for (const p of ports) {
+          if (p.protocol.toUpperCase() === 'WS' && !p.tls_upgrade) {
+            warn('ws-no-tls', `Port ${p.port} is WebSocket without tls_upgrade. Browser (WebGL) clients need wss://, which needs Edgegap's TLS Upgrade.`,
+              'Set tls_upgrade: true on this port in edgegap_create_app_version, unless no client runs in a browser.');
+          }
+        }
       }
     }
 

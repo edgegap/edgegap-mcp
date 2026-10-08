@@ -96,16 +96,30 @@ export function generateDockerfile(input: DockerfileInput) {
   }
 
   // ------------------------------------------------------------- ports ----
-  let ports: Array<{ port: number; protocol: string; name: string }>;
+  // A WebSocket transport means browser (WebGL) clients, which need wss://:
+  // Edgegap's TLS Upgrade on the WS port.
+  const browserNetcode = input.netcode !== undefined && protocolForNetcode(input.netcode) === 'WS';
+  let autoTls = false; // set when TLS was turned on without being asked for
+  let ports: Array<{ port: number; protocol: string; name: string; tls_upgrade?: boolean }>;
   if (input.ports && input.ports.length > 0) {
-    ports = input.ports.map((p, i) => ({
-      port: p.port,
-      protocol: p.protocol.toUpperCase(),
-      name: p.name ?? (i === 0 ? 'gameport' : `port${i + 1}`),
-    }));
+    ports = input.ports.map((p, i) => {
+      const protocol = p.protocol.toUpperCase();
+      let tls = p.tls_upgrade;
+      if (tls === undefined && browserNetcode && protocol === 'WS') {
+        tls = true;
+        autoTls = true;
+      }
+      return {
+        port: p.port,
+        protocol,
+        name: p.name ?? (i === 0 ? 'gameport' : `port${i + 1}`),
+        ...(tls !== undefined ? { tls_upgrade: tls } : {}),
+      };
+    });
   } else {
     const protocol = (input.netcode && protocolForNetcode(input.netcode)) || 'UDP';
-    ports = [{ port: 7777, protocol, name: 'gameport' }];
+    ports = [{ port: 7777, protocol, name: 'gameport', ...(browserNetcode ? { tls_upgrade: true } : {}) }];
+    autoTls = browserNetcode;
     assumptions.push(
       `Assumed the server listens on 7777/${protocol}${input.netcode ? ` (the protocol ${input.netcode} uses)` : ''}. ` +
         'Confirm the port in the server\'s network/transport settings and pass ports if it differs.'
@@ -202,6 +216,13 @@ export function generateDockerfile(input: DockerfileInput) {
         assumptions.push('Assumed the exported binary is named "server.x86_64"; pass executable if yours differs.');
       }
     }
+  }
+
+  if (autoTls) {
+    assumptions.push(
+      'Turned on tls_upgrade for the WebSocket port, because WebSocket transports usually mean ' +
+        'browser (WebGL) clients, which need wss://. Set tls_upgrade: false if no client runs in a browser.'
+    );
   }
 
   assumptions.push(

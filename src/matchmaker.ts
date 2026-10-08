@@ -28,6 +28,7 @@ export interface MatchmakerInput {
   inspect?: boolean;
   expansions?: Array<{ after_seconds: number; min_team_size?: number; max_latency_ms?: number }>;
   config_version?: string;
+  allowed_cors_origins?: string[];
 }
 
 const DURATION = /^\d+(ms|s|m|h)$/;
@@ -105,10 +106,21 @@ export function buildMatchmakerConfig(input: MatchmakerInput) {
     cautions.push('A match of one player starts a server per ticket. Fine for testing, costly in production.');
   }
 
+  // Browser (WebGL) clients call the matchmaker directly, so their page's
+  // origin must be allowed. An origin is scheme + host (+ port), nothing more:
+  // a path or trailing slash never matches a browser's Origin header.
+  const origins = input.allowed_cors_origins ?? [];
+  for (const o of origins) {
+    if (!/^https?:\/\/[^/\s?#]+$/.test(o)) {
+      problems.push(`allowed_cors_origins entry "${o}" is not an origin. Use scheme and host only, e.g. "https://mygame.example.com" or "http://localhost:8080", with no path or trailing slash.`);
+    }
+  }
+
   const config = {
     version: input.config_version ?? MATCHMAKER_CONFIG_VERSION,
     inspect: input.inspect ?? true,
     max_deployment_retry_count: 3,
+    ...(origins.length ? { allowed_cors_origins: origins } : {}),
     profiles: {
       [input.profile_name]: {
         ticket_expiration_period: expiration,

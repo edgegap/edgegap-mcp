@@ -73,10 +73,14 @@ they do not remove it.
 
 ### Scope of the allowlist
 
-`EDGEGAP_APP_ALLOWLIST` is enforced by the five tools that take an application
-name: `edgegap_create_app`, `edgegap_list_app_versions`,
-`edgegap_create_app_version`, `edgegap_deploy`, and
-`edgegap_build_matchmaker_config`.
+`EDGEGAP_APP_ALLOWLIST` is enforced by the four tools that create something in, or
+deploy from, an application: `edgegap_create_app`, `edgegap_create_app_version`,
+`edgegap_deploy`, and `edgegap_build_matchmaker_config` (whose config tells a
+matchmaker which version to deploy).
+
+Reads are not covered: `edgegap_list_apps` and `edgegap_list_app_versions` work on
+any application. Until 0.3.3 `edgegap_list_app_versions` was blocked too, which
+contradicted the README and stopped agents from checking a version's settings.
 
 Relay sessions and the container registry belong to the organization, not to an
 application, so the relay and registry tools are not covered by it either.
