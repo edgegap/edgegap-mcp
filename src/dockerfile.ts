@@ -61,21 +61,16 @@ const APT = [
 /** Unprivileged user. Required for Unreal, good practice everywhere else. */
 const USER_SETUP = 'RUN useradd -m -u 1000 server';
 
-export function generateDockerfile(input: DockerfileInput) {
-  const engine = input.engine;
-  const defaults = DEFAULTS[engine];
-  const assumptions: string[] = [];
+interface Template {
+  engine: Engine;
+  base: string;
+  buildPath: string;
+  executable: string;
+  args: string[];
+  expose: string[];
+}
 
-  const buildPath = input.build_path ?? defaults.build_path;
-  const executable = input.executable ?? defaults.executable;
-  const base = input.base_image ?? 'ubuntu:22.04';
-  const args = input.launch_args ?? [];
-
-  if (!executable) {
-    throw new DockerfileInputError(
-      'executable is required for engine "other": the file name of the server binary or start script inside build_path.'
-    );
-  }
+function validateInput(buildPath: string, executable: string, args: string[], base: string) {
   if (!PATH_RE.test(buildPath) || buildPath.split('/').includes('..') || buildPath.startsWith('/')) {
     throw new DockerfileInputError(
       `build_path "${buildPath}" must be a relative path inside the Docker build context (letters, digits, ".", "_", "-", "/"; no "..").`
@@ -94,8 +89,9 @@ export function generateDockerfile(input: DockerfileInput) {
   if (!IMAGE_RE.test(base)) {
     throw new DockerfileInputError(`base_image "${base}" is not a valid image reference.`);
   }
+}
 
-  // ------------------------------------------------------------- ports ----
+function resolvePorts(input: DockerfileInput, assumptions: string[]) {
   let ports: Array<{ port: number; protocol: string; name: string }>;
   if (input.ports && input.ports.length > 0) {
     ports = input.ports.map((p, i) => ({
@@ -111,97 +107,131 @@ export function generateDockerfile(input: DockerfileInput) {
         'Confirm the port in the server\'s network/transport settings and pass ports if it differs.'
     );
   }
+  return ports;
+}
 
-  // --------------------------------------------------------- templates ----
-  const expose = exposeLines(ports);
+function unityLines({ base, buildPath, executable, args, expose }: Template, input: DockerfileInput, assumptions: string[]) {
+  // Shell form so $UNITY_COMMANDLINE_ARGS (settable per deployment) expands.
+  // Edgegap's plugin template also prints `env` first; that is left out on
+  // purpose, since it writes every environment variable, hidden ones
+  // included, into the container logs.
+  const command = [`/root/build/${executable}`, '-batchmode', '-nographics', ...args, '$UNITY_COMMANDLINE_ARGS'].join(' ');
+  const lines = [
+    `FROM ${base}`,
+    '',
+    'ARG DEBIAN_FRONTEND=noninteractive',
+    ...APT,
+    '',
+    `# Linux Dedicated Server build folder (${executable}, *_Data, UnityPlayer.so).`,
+    `COPY ${buildPath} /root/build/`,
+    'WORKDIR /root/',
+    `RUN chmod +x /root/build/${executable}`,
+    '',
+    '# Documentation only: the port Edgegap exposes is the one on the app version.',
+    ...expose,
+    '',
+    `CMD ["/bin/bash", "-c", "${command}"]`,
+  ];
+  if (input.executable === undefined) {
+    assumptions.push(
+      'Assumed the server binary is named "ServerBuild". Unity names it after the build file you chose; check the build folder and pass executable if it differs.'
+    );
+  }
+  return lines;
+}
+
+function unrealLines({ base, buildPath, executable, args, expose }: Template, input: DockerfileInput, assumptions: string[]) {
+  const isScript = executable.endsWith('.sh');
+  const lines = [
+    `FROM ${base}`,
+    '',
+    'ARG DEBIAN_FRONTEND=noninteractive',
+    ...APT,
+    '',
+    '# Unreal refuses to start as root.',
+    USER_SETUP,
+    'WORKDIR /app',
+    `COPY --chown=server:server ${buildPath} /app/`,
+    isScript
+      ? `# Scripts saved on Windows carry CRLF endings, which break the shebang.\nRUN sed -i 's/\\r$//' /app/${executable} && chmod +x /app/${executable}`
+      : `RUN chmod +x /app/${executable}`,
+    'USER server',
+    '',
+    '# Documentation only: the port Edgegap exposes is the one on the app version.',
+    ...expose,
+    '',
+    `CMD ${JSON.stringify([`/app/${executable}`, ...args])}`,
+  ];
+  if (input.executable === undefined) {
+    assumptions.push(
+      'Assumed StartServer.sh, which the Edgegap Unreal plugin generates. Without the plugin, use the <Project>Server.sh from the packaged LinuxServer folder.'
+    );
+  }
+  return lines;
+}
+
+function genericLines({ engine, base, buildPath, executable, args, expose }: Template, input: DockerfileInput, assumptions: string[]) {
+  // Godot and other engines: same shape as Unreal, minus the CRLF fix
+  // unless the entry point is a script.
+  const isScript = executable.endsWith('.sh');
+  const launch = engine === 'godot' ? [`/app/${executable}`, '--headless', ...args] : [`/app/${executable}`, ...args];
+  const lines = [
+    `FROM ${base}`,
+    '',
+    'ARG DEBIAN_FRONTEND=noninteractive',
+    ...APT,
+    '',
+    USER_SETUP,
+    'WORKDIR /app',
+    `COPY --chown=server:server ${buildPath} /app/`,
+    isScript
+      ? `RUN sed -i 's/\\r$//' /app/${executable} && chmod +x /app/${executable}`
+      : `RUN chmod +x /app/${executable}`,
+    'USER server',
+    '',
+    '# Documentation only: the port Edgegap exposes is the one on the app version.',
+    ...expose,
+    '',
+    `CMD ${JSON.stringify(launch)}`,
+  ];
+  if (engine === 'godot') {
+    assumptions.push(
+      'Export with the Linux x86_64 preset. If the .pck is exported separately, keep it next to the binary in the build folder.'
+    );
+    if (input.executable === undefined) {
+      assumptions.push('Assumed the exported binary is named "server.x86_64"; pass executable if yours differs.');
+    }
+  }
+  return lines;
+}
+
+export function generateDockerfile(input: DockerfileInput) {
+  const engine = input.engine;
+  const defaults = DEFAULTS[engine];
+  const assumptions: string[] = [];
+
+  const buildPath = input.build_path ?? defaults.build_path;
+  const executable = input.executable ?? defaults.executable;
+  const base = input.base_image ?? 'ubuntu:22.04';
+  const args = input.launch_args ?? [];
+
+  if (!executable) {
+    throw new DockerfileInputError(
+      'executable is required for engine "other": the file name of the server binary or start script inside build_path.'
+    );
+  }
+  validateInput(buildPath, executable, args, base);
+
+  const ports = resolvePorts(input, assumptions);
+  const template = { engine, base, buildPath, executable, args, expose: exposeLines(ports) };
   let lines: string[];
 
   if (engine === 'unity') {
-    // Shell form so $UNITY_COMMANDLINE_ARGS (settable per deployment) expands.
-    // Edgegap's plugin template also prints `env` first; that is left out on
-    // purpose, since it writes every environment variable, hidden ones
-    // included, into the container logs.
-    const command = [`/root/build/${executable}`, '-batchmode', '-nographics', ...args, '$UNITY_COMMANDLINE_ARGS'].join(' ');
-    lines = [
-      `FROM ${base}`,
-      '',
-      'ARG DEBIAN_FRONTEND=noninteractive',
-      ...APT,
-      '',
-      `# Linux Dedicated Server build folder (${executable}, *_Data, UnityPlayer.so).`,
-      `COPY ${buildPath} /root/build/`,
-      'WORKDIR /root/',
-      `RUN chmod +x /root/build/${executable}`,
-      '',
-      '# Documentation only: the port Edgegap exposes is the one on the app version.',
-      ...expose,
-      '',
-      `CMD ["/bin/bash", "-c", "${command}"]`,
-    ];
-    if (input.executable === undefined) {
-      assumptions.push(
-        'Assumed the server binary is named "ServerBuild". Unity names it after the build file you chose; check the build folder and pass executable if it differs.'
-      );
-    }
+    lines = unityLines(template, input, assumptions);
   } else if (engine === 'unreal') {
-    const isScript = executable.endsWith('.sh');
-    lines = [
-      `FROM ${base}`,
-      '',
-      'ARG DEBIAN_FRONTEND=noninteractive',
-      ...APT,
-      '',
-      '# Unreal refuses to start as root.',
-      USER_SETUP,
-      'WORKDIR /app',
-      `COPY --chown=server:server ${buildPath} /app/`,
-      isScript
-        ? `# Scripts saved on Windows carry CRLF endings, which break the shebang.\nRUN sed -i 's/\\r$//' /app/${executable} && chmod +x /app/${executable}`
-        : `RUN chmod +x /app/${executable}`,
-      'USER server',
-      '',
-      '# Documentation only: the port Edgegap exposes is the one on the app version.',
-      ...expose,
-      '',
-      `CMD ${JSON.stringify([`/app/${executable}`, ...args])}`,
-    ];
-    if (input.executable === undefined) {
-      assumptions.push(
-        'Assumed StartServer.sh, which the Edgegap Unreal plugin generates. Without the plugin, use the <Project>Server.sh from the packaged LinuxServer folder.'
-      );
-    }
+    lines = unrealLines(template, input, assumptions);
   } else {
-    // Godot and other engines: same shape as Unreal, minus the CRLF fix
-    // unless the entry point is a script.
-    const isScript = executable.endsWith('.sh');
-    const launch = engine === 'godot' ? [`/app/${executable}`, '--headless', ...args] : [`/app/${executable}`, ...args];
-    lines = [
-      `FROM ${base}`,
-      '',
-      'ARG DEBIAN_FRONTEND=noninteractive',
-      ...APT,
-      '',
-      USER_SETUP,
-      'WORKDIR /app',
-      `COPY --chown=server:server ${buildPath} /app/`,
-      isScript
-        ? `RUN sed -i 's/\\r$//' /app/${executable} && chmod +x /app/${executable}`
-        : `RUN chmod +x /app/${executable}`,
-      'USER server',
-      '',
-      '# Documentation only: the port Edgegap exposes is the one on the app version.',
-      ...expose,
-      '',
-      `CMD ${JSON.stringify(launch)}`,
-    ];
-    if (engine === 'godot') {
-      assumptions.push(
-        'Export with the Linux x86_64 preset. If the .pck is exported separately, keep it next to the binary in the build folder.'
-      );
-      if (input.executable === undefined) {
-        assumptions.push('Assumed the exported binary is named "server.x86_64"; pass executable if yours differs.');
-      }
-    }
+    lines = genericLines(template, input, assumptions);
   }
 
   assumptions.push(
