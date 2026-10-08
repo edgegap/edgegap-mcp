@@ -21,7 +21,8 @@ const mock = http.createServer((req, res) => {
 await new Promise((r) => mock.listen(0, '127.0.0.1', r));
 
 const port = 18000 + Math.floor(Math.random() * 1000);
-const proc = spawn('node', ['dist/http.js'], {
+// Started through the main command's --http flag, the way npm users run it.
+const proc = spawn('node', ['dist/index.js', '--http'], {
   env: { PATH: process.env.PATH, PORT: String(port), HOST: '127.0.0.1',
     EDGEGAP_BASE_URL: `http://127.0.0.1:${mock.address().port}`,
     EDGEGAP_API_TOKEN: 'ambient-token-must-be-ignored' },

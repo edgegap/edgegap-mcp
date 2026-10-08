@@ -1,15 +1,15 @@
 {
   "name": "@edgegap/mcp",
   "mcpName": "dev.edgegap/mcp",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Check, push, and deploy game servers on Edgegap from your coding agent, with relays for P2P games. Runs locally; your API token never leaves your machine.",
   "scripts": {
     "prebuild": "rm -rf dist",
     "build": "tsc && chmod +x dist/index.js dist/http.js",
     "typecheck": "tsc --noEmit",
     "typecheck:worker": "tsc -p worker/tsconfig.json --noEmit",
-    "test": "node test/smoke.mjs && node test/guards.mjs && node test/elicit.mjs && node test/newtools.mjs && node test/http.mjs",
-    "start:http": "node dist/http.js",
+    "test": "node test/package.mjs && node test/smoke.mjs && node test/guards.mjs && node test/elicit.mjs && node test/newtools.mjs && node test/http.mjs",
+    "start:http": "node dist/index.js --http",
     "worker:dev": "wrangler dev --config worker/wrangler.jsonc --local --port 8787",
     "worker:check": "wrangler deploy --config worker/wrangler.jsonc --dry-run --outdir=.wrangler/dryrun",
     "worker:deploy": "wrangler deploy --config worker/wrangler.jsonc",
@@ -25,6 +25,14 @@
   ],
   "author": "Mathieu Duperre",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/edgegap/edgegap-mcp.git"
+  },
+  "homepage": "https://github.com/edgegap/edgegap-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/edgegap/edgegap-mcp/issues"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@modelcontextprotocol/server": "^2.0.0",
@@ -39,8 +47,7 @@
   },
   "type": "module",
   "bin": {
-    "edgegap-mcp": "dist/index.js",
-    "edgegap-mcp-http": "dist/http.js"
+    "edgegap-mcp": "dist/index.js"
   },
   "files": [
     "dist",

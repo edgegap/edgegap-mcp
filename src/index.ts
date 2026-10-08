@@ -32,7 +32,7 @@ async function main(): Promise<void> {
   }
 
   const server = new McpServer(
-    { name: 'edgegap', version: '0.3.0' },
+    { name: 'edgegap', version: '0.3.1' },
     { instructions: serverInstructions('local') }
   );
 
@@ -59,7 +59,18 @@ async function main(): Promise<void> {
   await server.connect(new StdioServerTransport());
 }
 
-main().catch((err) => {
-  process.stderr.write(`[edgegap-mcp] fatal: ${(err as Error).message}\n`);
-  process.exit(1);
-});
+// `--http` runs the self-hosted Streamable HTTP server (src/http.ts) instead of
+// stdio. It is a flag rather than a second `bin` entry on purpose: with two
+// commands and neither named `mcp`, `npx @edgegap/mcp` cannot pick one and
+// fails outright, which is what broke 0.3.0. Keep `bin` to one command.
+if (process.argv.slice(2).includes('--http')) {
+  import('./http.js').catch((err) => {
+    process.stderr.write(`[edgegap-mcp] fatal: ${(err as Error).message}\n`);
+    process.exit(1);
+  });
+} else {
+  main().catch((err) => {
+    process.stderr.write(`[edgegap-mcp] fatal: ${(err as Error).message}\n`);
+    process.exit(1);
+  });
+}

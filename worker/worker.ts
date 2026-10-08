@@ -88,7 +88,7 @@ export default {
 
     const handler = createMcpHandler(() => {
       const server = new McpServer(
-        { name: 'edgegap', version: '0.3.0' },
+        { name: 'edgegap', version: '0.3.1' },
         { instructions: serverInstructions('hosted') }
       );
 
