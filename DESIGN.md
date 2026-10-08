@@ -151,10 +151,23 @@ It is scoped to the org's registry project, and the returned command reads it
 from an environment variable over `--password-stdin` so it stays off command
 lines and out of shell history. The tool is hidden in read-only mode.
 
-**The registry credentials endpoint is not in the public spec.** It is
-`GET /v1/wizard/registry-credentials`, the same call the Unity plugin makes,
-preceded by `POST /v1/wizard/init-quick-start` when the project is not yet
-provisioned.
+**The registry credentials endpoint is not in the public spec, and only
+accepts quick-start tokens.** It is `GET /v1/wizard/registry-credentials`, the
+Unity plugin's quick-start call. A regular API token gets 403 "This token is not
+a quick start token" (verified 2026-10-08), so for almost every developer the
+tool cannot fetch credentials. On 403 it returns the manual path instead
+(dashboard Container Registry page, or another registry), and it never calls
+`POST /v1/wizard/init-quick-start`, which answers a regular token with a second,
+more confusing 403. Provisioning runs only on a 404, for a quick-start token
+whose project does not exist yet. Making this work for regular tokens needs a
+backend change, and is a product decision: it would let an org-wide token hand
+out push credentials.
+
+**Registry tag listing takes the image name only.** The API reads the project
+from the token, so `/v1/container-registry/images/<project>/<image>/tags` is a
+404. The tool tries the name as given first (nested image names are valid),
+then retries without a leading `<project>/`, and strips a registry host or tag
+if the agent passes a full image reference.
 
 **Bulk operations are deliberately absent.** `stop` takes one `request_id`.
 There is no bulk-stop tool, because an agent with a filter expression and a bug

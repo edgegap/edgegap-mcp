@@ -32,7 +32,7 @@ async function main(): Promise<void> {
   }
 
   const server = new McpServer(
-    { name: 'edgegap', version: '0.3.1' },
+    { name: 'edgegap', version: '0.3.2' },
     { instructions: serverInstructions('local') }
   );
 

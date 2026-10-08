@@ -923,13 +923,16 @@ export function registerTools(
       {
         title: 'Get Edgegap container registry push credentials',
         description:
-          'Return the registry URL, project, username and token for this organization\'s private ' +
-          'Edgegap container registry (registry.edgegap.com), plus the exact docker login, build ' +
-          'and push commands for your image. Use this when the server image is not in a registry ' +
-          'yet — no Docker Hub account needed. Provisions the registry project on first use. The ' +
-          'token is registry-scoped (push/pull images in this project), not the org API token: ' +
-          'pass it to docker login via --password-stdin, never as a command-line argument, and do ' +
-          'not write it into files. Call edgegap_validate_server_config before building.',
+          'Get the push login for this organization\'s private Edgegap container registry ' +
+          '(registry.edgegap.com) and the exact docker login, build and push commands for your ' +
+          'image. Use this when the server image is not in a registry yet. Edgegap only hands ' +
+          'these credentials to the quick-start token the Unity/Unreal plugins use; with a ' +
+          'regular API token this tool cannot fetch them and instead returns the steps to copy ' +
+          'them from the dashboard\'s Container Registry page — ask the developer for them then, ' +
+          'do not retry. When it does return a token, it is registry-scoped (push/pull images in ' +
+          'this project), not the org API token: pass it to docker login via --password-stdin, ' +
+          'never as a command-line argument, and do not write it into files. Call ' +
+          'edgegap_validate_server_config before building.',
         inputSchema: {
           image_name: z
             .string()
@@ -949,25 +952,29 @@ export function registerTools(
             return fail('Do not use the "latest" tag: Edgegap caches by tag, so a re-pushed "latest" can deploy a stale build. Pass a build ID or timestamp.');
           }
 
+          // Both wizard endpoints answer 403 to a regular API token: they belong
+          // to the plugins' quick-start flow. 403 is the token type, not a
+          // missing registry, so it must not trigger provisioning (which only
+          // fails with a second, more confusing 403). Only a 404 — a
+          // quick-start token whose project is not provisioned yet — does.
+          const unavailable = () => fail(registryCredentialsUnavailable(image_name, tag));
           let creds;
           try {
             creds = await client.getRegistryCredentials();
           } catch (err) {
-            if (!(err instanceof EdgegapApiError) || err.status === 401) throw err;
-            // Usually means the registry project has not been provisioned for
-            // this org yet. The plugins provision it this way on every login.
-            await client.initQuickStart('mcp');
+            if (!(err instanceof EdgegapApiError)) throw err;
+            if (err.status === 403) return unavailable();
+            if (err.status !== 404) throw err;
+            try {
+              await client.initQuickStart('mcp');
+            } catch (initErr) {
+              if (initErr instanceof EdgegapApiError && initErr.status === 403) return unavailable();
+              throw initErr;
+            }
             creds = await client.getRegistryCredentials();
           }
 
-          if (!creds.project || !creds.username || !creds.token) {
-            return fail(
-              'Edgegap did not return registry credentials for this organization. The developer ' +
-                `can request them in the dashboard (${DASHBOARD_URL}, Container Registry page), or ` +
-                'push to any other registry Edgegap can pull from (Docker Hub, GHCR, ECR, GCR, GitLab) ' +
-                'and pass registry_username/registry_token to edgegap_create_app_version.'
-            );
-          }
+          if (!creds.project || !creds.username || !creds.token) return unavailable();
 
           const host = (creds.registry_url || 'registry.edgegap.com').replace(/^https?:\/\//, '').replace(/\/$/, '');
           const image = image_name ?? '<image-name>';
@@ -996,7 +1003,7 @@ export function registerTools(
             next_step:
               'Export the token as EDGEGAP_REGISTRY_TOKEN in the shell that runs docker login ' +
               '(it never needs to appear in a command line or file), then build and push. ' +
-              `Confirm the push with edgegap_list_registry_tags (image_name "${creds.project}/${image}"), ` +
+              `Confirm the push with edgegap_list_registry_tags (image_name "${image}", without the project), ` +
               'then call edgegap_create_app_version with the values in for_create_app_version.',
           });
         })
@@ -1015,7 +1022,11 @@ export function registerTools(
       inputSchema: {
         image_name: z
           .string()
-          .describe('"<project>/<image>", e.g. "my-org-cv2l3w3vy6fg/my-game-server". Project comes from edgegap_get_registry_credentials.'),
+          .min(1)
+          .describe(
+            'The image name only, without the project, registry host or tag, e.g. "my-game-server". ' +
+              'The API reads the project from your token; "<project>/my-game-server" is not found.'
+          ),
         page: z.number().int().min(1).optional(),
         limit: z.number().int().min(1).max(100).optional().describe('Default 20.'),
       },
@@ -1023,17 +1034,56 @@ export function registerTools(
     },
     async ({ image_name, page, limit }) =>
       guard(auth, async () => {
-        if (!image_name.includes('/')) {
-          return fail(`image_name "${image_name}" needs the project prefix: "<project>/${image_name}".`);
+        // Agents often pass the full reference they pushed. Reduce it to what
+        // the API wants: no "registry.edgegap.com/" host, no ":tag".
+        const parts = image_name.replace(/@sha256:.*$/, '').split('/');
+        if (parts.length > 1 && /[.:]/.test(parts[0])) parts.shift();
+        parts[parts.length - 1] = parts[parts.length - 1].replace(/:[^:]*$/, '');
+        let name = parts.join('/');
+
+        const query = { page, limit: limit ?? 20 };
+        const notFound = (err: unknown) => err instanceof EdgegapApiError && err.status === 404;
+        let res;
+        try {
+          try {
+            res = await client.listRegistryTags(name, query);
+          } catch (err) {
+            // Nested image names are valid, so try the name as given first. If
+            // it is "<project>/<image>", that 404s; retry without the project.
+            if (!notFound(err) || !name.includes('/')) throw err;
+            name = name.slice(name.indexOf('/') + 1);
+            res = await client.listRegistryTags(name, query);
+          }
+        } catch (err) {
+          // The generic 404 hint points at applications, which is wrong here.
+          if (!notFound(err)) throw err;
+          return fail(
+            `No image named "${name}" in this organization's Edgegap registry, so nothing has been ` +
+              'pushed under that name. Check the name (image name only, as used after ' +
+              '"registry.edgegap.com/<project>/" in docker push), or push the image first.'
+          );
         }
-        const res = await client.listRegistryTags(image_name, { page, limit: limit ?? 20 });
+
         const tags = (res.data ?? []).map((t) => ({
           tag: t.tag,
           pushed: t.last_push_at,
           size_mb: t.artifact?.size_mb,
           digest: t.artifact?.image_hash,
         }));
-        return ok({ image_name, ...pageInfo(res.total_count, tags.length, page ?? 1), tags });
+        const hasNext = res.pagination?.has_next === true;
+        return ok({
+          image_name: name,
+          note: name !== image_name ? `Looked up "${name}". Pass the image name only next time.` : undefined,
+          total: res.count ?? tags.length,
+          ...(hasNext
+            ? {
+                showing: tags.length,
+                truncated: true,
+                next_step: `Only page ${page ?? 1} is shown. Call again with page: ${(page ?? 1) + 1} before concluding a tag is missing.`,
+              }
+            : {}),
+          tags,
+        });
       })
   );
 
@@ -1268,6 +1318,35 @@ export function registerTools(
           ],
         });
       })
+  );
+}
+
+/**
+ * What edgegap_get_registry_credentials says when Edgegap will not hand the
+ * registry login to this token. Written as the manual path that works today,
+ * so the agent asks the developer instead of retrying or guessing.
+ */
+function registryCredentialsUnavailable(imageName?: string, tag?: string): string {
+  const image = imageName ?? '<image-name>';
+  const buildTag = tag ?? '<unique-build-tag>';
+  const ref = `registry.edgegap.com/<project>/${image}:${buildTag}`;
+  return (
+    'Edgegap does not give container registry credentials to a regular API token: the ' +
+    'endpoint only accepts the quick-start token the Unity/Unreal plugins use (it answered ' +
+    '403). This is the token type, not a problem with the registry. Do not retry. Ask the ' +
+    'developer for the registry login instead:\n\n' +
+    `1. In the dashboard (${DASHBOARD_URL}), open the Container Registry page and copy the ` +
+    'Project, Username and Token.\n' +
+    '2. Log in with the token read from an environment variable, never as an argument:\n' +
+    `   printf '%s' "$EDGEGAP_REGISTRY_TOKEN" | docker login registry.edgegap.com -u '<username>' --password-stdin\n` +
+    `3. docker build --platform linux/amd64 -t ${ref} .\n` +
+    `4. docker push ${ref}\n` +
+    `5. Confirm with edgegap_list_registry_tags (image_name "${image}", without the project).\n` +
+    '6. Call edgegap_create_app_version with docker_repository "registry.edgegap.com", ' +
+    `docker_image "<project>/${image}", docker_tag "${buildTag}", and the same username and ` +
+    'token as registry_username/registry_token.\n\n' +
+    'Or push to any other registry Edgegap can pull from (Docker Hub, GHCR, ECR, GCR, GitLab) ' +
+    'and pass its registry_username/registry_token to edgegap_create_app_version.'
   );
 }
 

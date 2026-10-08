@@ -13,7 +13,17 @@ function check(label, cond, detail = '') {
 // ------------------------------------------------------------- mock API ----
 const calls = [];
 let provisioned = false;
+// The wizard endpoints only accept the plugins' quick-start token; a regular
+// API token gets 403 from both (verified against the live API, 2026-10-08).
+let tokenType = 'regular';
 let relayPolls = 0;
+// Images in the token's registry project. The API takes the image name only
+// and reads the project from the token; nested names keep their slashes.
+const REGISTRY_IMAGES = {
+  'my-game-server': { data: [{ tag: 'build-42', last_push_at: '2026-09-30 12:00:00+00:00', artifact: { deleted: false, remaining_tags: ['build-42'], image_hash: 'sha256:abc', size_mb: 512 } }], count: 1, pagination: { number: 1, next_page_number: null, has_next: false } },
+  'team/nested-server': { data: [{ tag: 'n-1', last_push_at: '2026-09-30 12:00:00+00:00', artifact: { image_hash: 'sha256:def', size_mb: 100 } }], count: 1, pagination: { number: 1, has_next: false } },
+  'big-server': { data: [{ tag: 'b-1', last_push_at: '2026-09-30 12:00:00+00:00', artifact: { size_mb: 1 } }], count: 40, pagination: { number: 1, next_page_number: 2, has_next: true } },
+};
 const mock = http.createServer((req, res) => {
   let body = '';
   req.on('data', (c) => (body += c));
@@ -25,16 +35,23 @@ const mock = http.createServer((req, res) => {
     };
     const { pathname } = new URL(req.url, 'http://x');
     const route = `${req.method} ${pathname}`;
+    const tagsRoute = route.match(/^GET \/v1\/container-registry\/images\/(.+)\/tags$/);
+    if (tagsRoute) {
+      const image = tagsRoute[1];
+      return REGISTRY_IMAGES[image]
+        ? send(200, REGISTRY_IMAGES[image])
+        : send(404, { message: `No image named ${image} found inside your project.` });
+    }
     switch (route) {
       case 'GET /v1/wizard/registry-credentials':
+        if (tokenType !== 'quickstart') return send(403, { message: 'This token is not a quick start token' });
         return provisioned
           ? send(200, { registry_url: 'registry.edgegap.com', project: 'my-org-abc123', username: 'robot$my-org', token: 'reg-token-xyz' })
           : send(404, { message: 'no registry project' });
       case 'POST /v1/wizard/init-quick-start':
+        if (tokenType !== 'quickstart') return send(403, { message: 'This token is not a quick start token' });
         provisioned = true;
         return send(204);
-      case 'GET /v1/container-registry/images/my-org-abc123/my-game-server/tags':
-        return send(200, { data: [{ tag: 'build-42', last_push_at: '2026-09-30T12:00:00Z', artifact: { image_hash: 'sha256:abc', size_mb: 512, artifact_deleted: false, remaining_tags: ['build-42'] } }], total_count: 1 });
       case 'POST /v1/relays/sessions':
         return send(200, { session_id: 'abc123-S', authorization_token: 111, status: 'Initializing', ready: false, linked: false, session_users: [] });
       case 'GET /v1/relays/sessions/abc123-S':
@@ -181,10 +198,24 @@ check('deploy tool says it is the recommended authoritative server', /authoritat
 
 // ------------------------------------------------------------- registry ----
 console.log('\nregistry');
+// A regular API token: what almost every developer has.
 calls.length = 0;
 let res = await c.callTool({ name: 'edgegap_get_registry_credentials', arguments: { image_name: 'my-game-server', tag: 'build-42' } });
+let t = text(res);
+check('regular token: reported as an error, not credentials', res.isError === true);
+check('regular token: says why (quick-start only) and not to retry', /quick-start token/.test(t) && /Do not retry/.test(t));
+check('regular token: does not attempt provisioning', !calls.some((x) => x.url === '/v1/wizard/init-quick-start'));
+check('regular token: points to the dashboard Container Registry page', /Container Registry page/.test(t));
+check('regular token: gives the push commands for this image and tag', t.includes('registry.edgegap.com/<project>/my-game-server:build-42') && /--password-stdin/.test(t));
+check('regular token: offers other registries', /Docker Hub/.test(t) && /registry_username/.test(t));
+check('regular token: no misleading Edgegap API error text', !/Edgegap API 403/.test(t));
+
+// The plugins' quick-start token, project not provisioned yet.
+tokenType = 'quickstart';
+calls.length = 0;
+res = await c.callTool({ name: 'edgegap_get_registry_credentials', arguments: { image_name: 'my-game-server', tag: 'build-42' } });
 r = json(res);
-check('provisions via init-quick-start when credentials 404', calls.some((x) => x.url === '/v1/wizard/init-quick-start' && x.body?.source === 'mcp'));
+check('quick-start token: provisions via init-quick-start when credentials 404', calls.some((x) => x.url === '/v1/wizard/init-quick-start' && x.body?.source === 'mcp'));
 check('returns project/username/token', r.project === 'my-org-abc123' && r.username === 'robot$my-org' && r.token === 'reg-token-xyz');
 check('image ref includes project and tag', r.image_ref === 'registry.edgegap.com/my-org-abc123/my-game-server:build-42');
 check('login uses --password-stdin, token not on the command line', /--password-stdin/.test(r.commands.login) && !r.commands.login.includes('reg-token-xyz'));
@@ -194,10 +225,34 @@ check('API token never in output', !text(res).includes('fake-api-token'));
 res = await c.callTool({ name: 'edgegap_get_registry_credentials', arguments: { tag: 'latest' } });
 check('rejects the "latest" tag', res.isError === true);
 
+check('next step tells the agent to list tags by image name only', /image_name "my-game-server", without the project/.test(r.next_step));
+tokenType = 'regular';
+
+const tagCalls = () => calls.filter((x) => x.url.startsWith('/v1/container-registry/')).map((x) => new URL(x.url, 'http://x').pathname);
+calls.length = 0;
+r = json(await c.callTool({ name: 'edgegap_list_registry_tags', arguments: { image_name: 'my-game-server' } }));
+check('image name only: lists pushed tags', r.tags?.[0]?.tag === 'build-42' && r.tags[0].size_mb === 512 && r.total === 1);
+check('image name only: one request, image name in the path', JSON.stringify(tagCalls()) === JSON.stringify(['/v1/container-registry/images/my-game-server/tags']), JSON.stringify(tagCalls()));
+check('image name only: no note', r.note === undefined && r.truncated === undefined);
+
+calls.length = 0;
 r = json(await c.callTool({ name: 'edgegap_list_registry_tags', arguments: { image_name: 'my-org-abc123/my-game-server' } }));
-check('lists pushed tags (slash kept in path)', r.tags?.[0]?.tag === 'build-42' && r.tags[0].size_mb === 512);
-res = await c.callTool({ name: 'edgegap_list_registry_tags', arguments: { image_name: 'my-game-server' } });
-check('tag listing without project prefix is refused locally', res.isError === true);
+check('"<project>/<image>": project stripped after the 404, tags found', r.tags?.[0]?.tag === 'build-42' && r.image_name === 'my-game-server');
+check('"<project>/<image>": tells the agent to drop the project next time', /image name only/.test(r.note ?? ''));
+
+r = json(await c.callTool({ name: 'edgegap_list_registry_tags', arguments: { image_name: 'registry.edgegap.com/my-org-abc123/my-game-server:build-42' } }));
+check('full image reference: host, project and tag stripped', r.tags?.[0]?.tag === 'build-42' && r.image_name === 'my-game-server');
+
+calls.length = 0;
+r = json(await c.callTool({ name: 'edgegap_list_registry_tags', arguments: { image_name: 'team/nested-server' } }));
+check('nested image name: kept whole, found first try', r.tags?.[0]?.tag === 'n-1' && tagCalls().length === 1);
+
+r = json(await c.callTool({ name: 'edgegap_list_registry_tags', arguments: { image_name: 'big-server' } }));
+check('more pages: marked truncated with a next step', r.truncated === true && r.total === 40 && /page: 2/.test(r.next_step ?? ''));
+
+res = await c.callTool({ name: 'edgegap_list_registry_tags', arguments: { image_name: 'never-pushed' } });
+check('unknown image: reported as an error', res.isError === true && /No image named "never-pushed"/.test(text(res)));
+check('unknown image: does not point the agent at applications', !/edgegap_list_apps/.test(text(res)));
 
 // ---------------------------------------------------------- deployments ----
 console.log('\nlist_deployments');

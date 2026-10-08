@@ -170,19 +170,25 @@ export class EdgegapClient {
 
   /**
    * Push credentials for the organization's project on registry.edgegap.com.
-   * Not in the published OpenAPI spec: this is the endpoint the Unity plugin
-   * uses, and it can fail until init-quick-start has provisioned the project.
+   * Not in the published OpenAPI spec: this is the Unity plugin's quick-start
+   * endpoint, and it only accepts that flow's quick-start tokens. A regular
+   * API token gets 403 "This token is not a quick start token".
    */
   getRegistryCredentials() {
     return this.request<RegistryCredentials>('GET', 'v1', '/v1/wizard/registry-credentials');
   }
 
-  /** Provisions the registry project if needed. Idempotent; returns 204. */
+  /** Provisions the registry project for a quick-start token. Returns 204.
+   *  Also quick-start only: a regular API token gets 403. */
   initQuickStart(source: string) {
     return this.request<unknown>('POST', 'v1', '/v1/wizard/init-quick-start', { body: { source } });
   }
 
-  /** imageName is "<project>/<image>"; the slash is part of the route. */
+  /**
+   * imageName is the image name only, e.g. "my-game-server": the API takes the
+   * project from the token, and "<project>/<image>" is a 404. The route is
+   * <path:image_name>, so a nested name keeps its slashes unencoded.
+   */
   listRegistryTags(imageName: string, query: { page?: number; limit?: number } = {}) {
     const path = imageName.split('/').map(encodeURIComponent).join('/');
     return this.request<RegistryTagsResponse>(
@@ -306,9 +312,10 @@ export interface RegistryTagsResponse {
   data?: Array<{
     tag: string;
     last_push_at: string;
-    artifact?: { image_hash?: string; size_mb?: number; artifact_deleted?: boolean };
+    artifact?: { image_hash?: string; size_mb?: number; deleted?: boolean };
   }>;
-  total_count?: number;
+  count?: number;
+  pagination?: { number?: number; has_next?: boolean; next_page_number?: number | null };
 }
 
 export interface RelayPort {

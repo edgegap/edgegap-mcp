@@ -142,7 +142,7 @@ To keep your API token on your own machine, run the server locally instead. Leav
 }
 ```
 
-Needs Node 18+. Pin a version in production (`@edgegap/mcp@0.3.1`) rather than floating on latest. Registered in the official MCP registry as `dev.edgegap/mcp`.
+Needs Node 18+. Pin a version in production (`@edgegap/mcp@0.3.2`) rather than floating on latest. Registered in the official MCP registry as `dev.edgegap/mcp`.
 
 The local server can also limit what an agent can do. These variables have no effect on the hosted endpoint at `mcp.edgegap.dev`:
 
@@ -164,8 +164,8 @@ Your agent picks the right tool from your request. You don't need to name them, 
 | --- | --- |
 | `edgegap_generate_dockerfile` | Writes a Dockerfile for your server build: your build folder, server binary or start script, ports, and launch arguments, with the right headless flags (Unity `-batchmode -nographics`, Godot `--headless`), a non-root user for Unreal, and matching ports. Lists anything it had to assume so your agent can confirm it. Works for Unity, Unreal Engine, Godot, and any other engine. |
 | `edgegap_validate_server_config` | Checks an existing Dockerfile, ports, resources, and image tag before you build. Catches ARM or Windows images (Edgegap runs `linux/amd64`), Unreal servers running as root, missing Unity `-batchmode -nographics`, servers bound to `localhost`, ports that don't match your netcode transport, and the `latest` tag. |
-| `edgegap_get_registry_credentials` ● | Returns push credentials for your private Edgegap container registry, with the exact `docker login`, build, and push commands. No Docker Hub account needed. |
-| `edgegap_list_registry_tags` | Confirms your image push landed before you register it. |
+| `edgegap_get_registry_credentials` ● | Returns push credentials for your private Edgegap container registry, with the exact `docker login`, build, and push commands. Edgegap only gives these to the Unity/Unreal plugins' quick-start token; with a regular API token, it tells your agent to ask you for the login from the dashboard's **Container Registry** page instead. |
+| `edgegap_list_registry_tags` | Confirms your image push landed before you register it. Takes the image name only, e.g. `my-game-server`: the project comes from your token. |
 
 ### Dedicated Servers (Recommended)
 
@@ -230,7 +230,7 @@ Edgegap could not pull your container image. Check the repository, image name, a
 
 ### Registry Credentials Unavailable
 
-If your agent can't retrieve registry credentials, request them in the [dashboard](https://app.edgegap.com) under **Container Registry**, or push to another registry Edgegap can pull from (Docker Hub, GitHub, AWS ECR, GCP, GitLab). See [External Registries](https://docs.edgegap.com/docs/tools-and-integrations/docker/external-registries).
+Edgegap only gives registry credentials to the quick-start token the Unity and Unreal plugins use, so with a regular API token your agent can't retrieve them and asks you instead. Copy the Project, Username and Token from the [dashboard](https://app.edgegap.com) under **Container Registry**, or push to another registry Edgegap can pull from (Docker Hub, GitHub, AWS ECR, GCP, GitLab). See [External Registries](https://docs.edgegap.com/docs/tools-and-integrations/docker/external-registries).
 
 ### Server Starts Locally but Not on Edgegap
 
