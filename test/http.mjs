@@ -67,6 +67,16 @@ check('a real token reaches the API as "token <value>"', !r.isError && calls.at(
 check('the token never appears in output', !text(r).includes(TOKEN));
 await c.close();
 
+// The prefix doubles when an EDGEGAP_API_TOKEN that already holds "token <uuid>"
+// goes into a header template that adds "token " again. This used to be
+// refused as a foreign credential.
+for (const header of [`token token ${TOKEN}`, `Bearer token ${TOKEN}`, `Bearer ${TOKEN}`, TOKEN]) {
+  c = await connect(header);
+  r = await c.callTool({ name: 'edgegap_list_apps', arguments: {} });
+  check(`"${header.replace(TOKEN, '<uuid>')}" reaches the API as "token <uuid>"`, !r.isError && calls.at(-1)?.auth === `token ${TOKEN}`, text(r).slice(0, 160));
+  await c.close();
+}
+
 proc.kill('SIGTERM');
 mock.close();
 console.log(failures === 0 ? '\nAll checks passed.' : `\n${failures} check(s) FAILED.`);

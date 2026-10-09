@@ -255,7 +255,11 @@ export interface AppVersionRecord {
   docker_tag?: string;
   max_duration?: number;
   caching_percent?: number;
-  ports?: Array<{ port: number; protocol: string; name?: string }>;
+  ports?: Array<{ port: number; protocol: string; name?: string; tls_upgrade?: boolean }>;
+  /** Registry login for pulling the image. The API returns the token in
+   *  plain text here: read it for presence only, never pass it on. */
+  private_username?: string | null;
+  private_token?: string | null;
 }
 
 export interface ListVersionsResponse {

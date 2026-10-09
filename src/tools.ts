@@ -89,6 +89,11 @@ export function serverInstructions(mode: 'local' | 'hosted'): string {
 const PLACEHOLDER_IMAGE =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
 
+/** Port protocols, uppercased. The API accepts "WS" but returns "Websocket". */
+const WS_PROTOCOLS = new Set(['WS', 'WEBSOCKET']);
+/** tls_upgrade is only valid on WebSocket and HTTP ports (per the API spec). */
+const TLS_PROTOCOLS = new Set(['WS', 'WEBSOCKET', 'HTTP']);
+
 const TERMINAL_OK = ['READY', 'STATUS_READY'];
 const TERMINAL_BAD = ['ERROR', 'STATUS_ERROR', 'TERMINATED', 'STATUS_TERMINATED'];
 
@@ -108,11 +113,32 @@ function fail(message: string): ToolResult {
   return { content: [{ type: 'text', text: message }], isError: true };
 }
 
+/**
+ * What a 404 means, per kind of resource. A 404 from Edgegap only says "not
+ * found"; which thing is missing, and what to do next, depends on the tool.
+ * One generic hint used to be attached to every 404, which sent agents to
+ * edgegap_list_apps for stopped deployments and missing registry images.
+ */
+const NOT_FOUND = {
+  app:
+    'the application or version name does not exist. Call edgegap_list_apps, then ' +
+    'edgegap_list_app_versions, to find the right names.',
+  deployment:
+    'no deployment with that request_id. It may have stopped and been cleaned up, or the ' +
+    'request_id is wrong. Running deployments are listed by edgegap_list_deployments.',
+  logs:
+    'no logs for this deployment. Container logs only exist while a deployment is running; ' +
+    'once it has stopped they are gone, unless Endpoint Storage was configured on the version ' +
+    'before it ran. If it is still running, check the request_id with edgegap_list_deployments.',
+  relay: 'no relay session with that session_id. It may already have been deleted.',
+} as const;
+
 /** Wraps a handler so API errors come back as readable, self-correctable text
  *  rather than a protocol-level exception the agent cannot act on. */
 function guard(
   auth: TokenSource,
-  fn: () => Promise<ToolResult>
+  fn: () => Promise<ToolResult>,
+  notFound?: string
 ): Promise<ToolResult> {
   const handled = fn().catch((err: unknown): ToolResult => {
     if (err instanceof TokenUnavailableError) {
@@ -121,7 +147,7 @@ function guard(
       return fail(err.message);
     }
     if (err instanceof EdgegapApiError) {
-      const hint = errorHint(err);
+      const hint = errorHint(err, notFound);
       return fail(`${err.message}${hint ? `\n\nLikely cause: ${hint}` : ''}`);
     }
     return fail(redact((err as Error).message ?? String(err), auth.current));
@@ -141,7 +167,16 @@ function guard(
   });
 }
 
-function errorHint(err: EdgegapApiError): string | undefined {
+/** guard() with the 404 hint first, so it reads at the call site. */
+function guarded(
+  auth: TokenSource,
+  notFound: string,
+  fn: () => Promise<ToolResult>
+): Promise<ToolResult> {
+  return guard(auth, fn, notFound);
+}
+
+function errorHint(err: EdgegapApiError, notFound?: string): string | undefined {
   switch (err.status) {
     case 401:
       // Deliberately does not promise a re-prompt: the local server asks again
@@ -153,8 +188,16 @@ function errorHint(err: EdgegapApiError): string | undefined {
         'https://app.edgegap.com/user-settings?tab=tokens. The token has been ' +
         'discarded from this session.'
       );
+    case 400:
+      // The deployment endpoints answer an unknown request_id with 400 ("Bad
+      // Request ID provided", or a generic "could not understand" for logs),
+      // not 404. Their only input is the request_id, so a 400 means that.
+      return notFound === NOT_FOUND.deployment || notFound === NOT_FOUND.logs ? notFound : undefined;
     case 404:
-      return 'the application or version name does not exist. Call edgegap_list_apps first.';
+      // Only the tool knows what was not found; no hint beats a wrong one.
+      return notFound;
+    case 429:
+      return 'Edgegap rate-limited this token. Wait a few seconds before the next call, and do not retry in a loop.';
     case 409:
       return 'a resource with that name already exists. Pick a different name or reuse the existing one.';
     case 422:
@@ -319,26 +362,37 @@ export function registerTools(
     {
       title: 'List versions of an application',
       description:
-        'List the versions under an application, with their container image and resource ' +
-        'settings. Use this to find the version name to deploy, or to copy settings from a ' +
-        'working version when creating a new one.',
+        'List the versions under an application, with their container image, resources, ports ' +
+        '(including whether TLS Upgrade is on, which browser/WebGL clients need for wss://) and ' +
+        'whether a registry login is set for pulling the image. Use this to find the version ' +
+        'name to deploy, to check a version is ready before deploying, or to copy settings from ' +
+        'a working version when creating a new one.',
       inputSchema: {
         application: z.string().describe('Application name, as returned by edgegap_list_apps.'),
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async ({ application }) =>
-      guard(auth, async () => {
-        assertAppAllowed(config, application);
+      // Read-only, so not subject to EDGEGAP_APP_ALLOWLIST: the allowlist
+      // limits what the agent can create and deploy into, as documented.
+      guarded(auth, NOT_FOUND.app, async () => {
         const res = await client.listAppVersions(application);
         const versions = (res.versions ?? []).map((v) => ({
           name: v.name,
           active: v.is_active,
           image: [v.docker_repository, v.docker_image, v.docker_tag].filter(Boolean).join('/'),
+          // Whether a login is set, never the login itself: the API returns
+          // the registry token in this response.
+          registry_credentials_set: Boolean(v.private_username && v.private_token),
           cpu_units: v.req_cpu,
           memory_mb: v.req_memory,
           max_duration_minutes: v.max_duration,
-          ports: v.ports?.map((p) => `${p.name ?? 'port'}:${p.port}/${p.protocol}`),
+          ports: v.ports?.map((p) => ({
+            name: p.name,
+            port: p.port,
+            protocol: p.protocol,
+            tls_upgrade: p.tls_upgrade ?? false,
+          })),
         }));
         return ok({ application, ...pageInfo(res.total_count, versions.length, 1), versions });
       })
@@ -383,11 +437,25 @@ export function registerTools(
                   .boolean()
                   .optional()
                   .describe('Readiness check on this port. Default true.'),
+                tls_upgrade: z
+                  .boolean()
+                  .optional()
+                  .describe(
+                    'Edgegap terminates TLS on this port, so clients connect with wss:// or https://. ' +
+                      'Required for browser (WebGL) clients, which cannot use plain ws:// from an https page. ' +
+                      'WS and HTTP ports only. Default false.'
+                  ),
               })
             )
             .min(1)
             .describe('Ports to expose. At least one is required for players to connect.'),
-          registry_username: z.string().optional().describe('Registry username, for private images.'),
+          registry_username: z
+            .string()
+            .optional()
+            .describe(
+              'Registry username. Needed for private images, including images in your own ' +
+                'registry.edgegap.com project: Edgegap pulls with this login, not your API token.'
+            ),
           registry_token: z.string().optional().describe('Registry password or token.'),
           max_duration_minutes: z
             .number()
@@ -406,7 +474,7 @@ export function registerTools(
         annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true },
       },
       async (args) =>
-        guard(auth, async () => {
+        guarded(auth, NOT_FOUND.app, async () => {
           assertAppAllowed(config, args.application);
 
           if (args.memory_mb > args.cpu_units * 2) {
@@ -416,34 +484,75 @@ export function registerTools(
             );
           }
 
+          const badTls = args.ports.find((p) => p.tls_upgrade && !TLS_PROTOCOLS.has(p.protocol.toUpperCase()));
+          if (badTls) {
+            return fail(
+              `Port ${badTls.port} is ${badTls.protocol}; tls_upgrade only works on WS and HTTP ports. ` +
+                'Use protocol "WS" for a WebSocket server, or drop tls_upgrade.'
+            );
+          }
+
           const requested = args.max_duration_minutes ?? config.maxDurationCeiling;
           const capped = Math.min(requested, config.maxDurationCeiling);
+          const hasRegistryLogin = Boolean(args.registry_username && args.registry_token);
+          const edgegapRegistry = /(^|\/\/)registry\.edgegap\.com\/?$/.test(args.docker_repository.trim());
 
-          const res = await client.createAppVersion(args.application, {
-            name: args.name,
-            is_active: true,
-            req_cpu: args.cpu_units,
-            req_memory: args.memory_mb,
-            docker_repository: args.docker_repository,
-            docker_image: args.docker_image,
-            docker_tag: args.docker_tag,
-            private_username: args.registry_username,
-            private_token: args.registry_token,
-            verify_image: args.verify_image ?? false,
-            max_duration: capped,
-            ports: args.ports.map((p) => ({
-              port: p.port,
-              protocol: p.protocol,
-              name: p.name ?? 'gameport',
-              to_check: p.to_check ?? true,
-            })),
-            envs: args.env?.map((e) => ({ key: e.key, value: e.value, is_hidden: false })),
-          });
+          let res;
+          try {
+            res = await client.createAppVersion(args.application, {
+              name: args.name,
+              is_active: true,
+              req_cpu: args.cpu_units,
+              req_memory: args.memory_mb,
+              docker_repository: args.docker_repository,
+              docker_image: args.docker_image,
+              docker_tag: args.docker_tag,
+              private_username: args.registry_username,
+              private_token: args.registry_token,
+              verify_image: args.verify_image ?? false,
+              max_duration: capped,
+              ports: args.ports.map((p) => ({
+                port: p.port,
+                protocol: p.protocol,
+                name: p.name ?? 'gameport',
+                to_check: p.to_check ?? true,
+                tls_upgrade: p.tls_upgrade ?? false,
+              })),
+              envs: args.env?.map((e) => ({ key: e.key, value: e.value, is_hidden: false })),
+            });
+          } catch (err) {
+            // verify_image pulls with the version's registry login. Without one
+            // — even for the org's own registry.edgegap.com project — Edgegap
+            // answers a bare 400 "Unable to login with the given credentials".
+            if (err instanceof EdgegapApiError && err.status === 400 && /login|credential/i.test(err.apiMessage)) {
+              return fail(registryLoginNeeded(args.docker_repository, hasRegistryLogin));
+            }
+            throw err;
+          }
+
+          const notes: string[] = [];
+          if (edgegapRegistry && !hasRegistryLogin) {
+            notes.push(
+              'No registry login was set. Edgegap pulls images from registry.edgegap.com with the ' +
+                'version\'s registry login, not your API token, so deployments of this version will ' +
+                'likely fail to pull (424) until the developer adds the Container Registry username ' +
+                'and token to this version in the dashboard.'
+            );
+          }
+          for (const p of args.ports) {
+            if (WS_PROTOCOLS.has(p.protocol.toUpperCase()) && !p.tls_upgrade) {
+              notes.push(
+                `Port ${p.port} is WebSocket without tls_upgrade. If clients run in a browser (WebGL), ` +
+                  'they need wss://: create the version with tls_upgrade: true on this port.'
+              );
+            }
+          }
 
           return ok({
             created: `${args.application}/${res.version?.name ?? args.name}`,
             max_duration_minutes: capped,
             capped_by_server: capped < requested ? config.maxDurationCeiling : undefined,
+            notes: notes.length ? notes : undefined,
             next_step: 'Call edgegap_deploy to start an instance.',
           });
         })
@@ -480,7 +589,7 @@ export function registerTools(
         annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true },
       },
       async (args) =>
-        guard(auth, async () => {
+        guarded(auth, NOT_FOUND.app, async () => {
           assertAppAllowed(config, args.application);
 
           const users = buildUsers(args.users);
@@ -533,7 +642,7 @@ export function registerTools(
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async ({ request_id }) =>
-      guard(auth, async () => {
+      guarded(auth, NOT_FOUND.deployment, async () => {
         const d = await client.getDeployment(request_id);
         return ok(compactDeployment(d));
       })
@@ -562,7 +671,7 @@ export function registerTools(
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
     },
     async ({ request_id, timeout_seconds }) =>
-      guard(auth, async () => {
+      guarded(auth, NOT_FOUND.deployment, async () => {
         const budgetMs = (timeout_seconds ?? 180) * 1000;
         const startedAt = Date.now();
         let intervalMs = 2000;
@@ -681,7 +790,7 @@ export function registerTools(
         annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: true },
       },
       async ({ request_id }) =>
-        guard(auth, async () => {
+        guarded(auth, NOT_FOUND.deployment, async () => {
           const res = await client.stopDeployment(request_id);
           return ok({ request_id, result: res.message ?? 'stop requested' });
         })
@@ -711,7 +820,7 @@ export function registerTools(
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async ({ request_id, max_characters }) =>
-      guard(auth, async () => {
+      guarded(auth, NOT_FOUND.logs, async () => {
         const res = await client.getDeploymentLogs(request_id);
         const cap = max_characters ?? 8000;
         const tail = (s: string | null | undefined) =>
@@ -771,6 +880,7 @@ export function registerTools(
               port: z.number().int().min(1).max(59999),
               protocol: z.enum(PROTOCOLS),
               name: z.string().optional(),
+              tls_upgrade: z.boolean().optional().describe('TLS Upgrade (wss/https) on a WS or HTTP port, for browser clients.'),
             })
           )
           .optional()
@@ -869,6 +979,7 @@ export function registerTools(
               port: z.number().int(),
               protocol: z.string(),
               name: z.string().optional(),
+              tls_upgrade: z.boolean().optional().describe('TLS Upgrade (wss/https) on a WS or HTTP port, for browser clients.'),
             })
           )
           .optional()
@@ -1174,7 +1285,7 @@ export function registerTools(
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async ({ session_id }) =>
-      guard(auth, async () => ok(compactRelay(await client.getRelaySession(session_id))))
+      guarded(auth, NOT_FOUND.relay, async () => ok(compactRelay(await client.getRelaySession(session_id))))
   );
 
   if (mutating) {
@@ -1193,7 +1304,7 @@ export function registerTools(
         annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true },
       },
       async ({ session_id, user_ip }) =>
-        guard(auth, async () => {
+        guarded(auth, NOT_FOUND.relay, async () => {
           const res = await client.authorizeRelayUser({ session_id, user_ip });
           return ok({
             session_id: res.session_id,
@@ -1216,7 +1327,7 @@ export function registerTools(
         annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: true },
       },
       async ({ session_id }) =>
-        guard(auth, async () => {
+        guarded(auth, NOT_FOUND.relay, async () => {
           await client.deleteRelaySession(session_id);
           return ok({ session_id, result: 'deleted' });
         })
@@ -1268,11 +1379,19 @@ export function registerTools(
         ticket_expiration: z.string().optional().describe('Default "5m".'),
         inspect: z.boolean().optional().describe('Expose the inspection API for debugging. Default true; turn off for production.'),
         verify_version: z.boolean().optional().describe('Look up the application version first. Default true.'),
+        allowed_cors_origins: z
+          .array(z.string())
+          .optional()
+          .describe(
+            'Origins of web pages allowed to call the matchmaker, e.g. ["https://mygame.example.com", ' +
+              '"http://localhost:8080"]. Required when game clients run in a browser (WebGL): browsers ' +
+              'block matchmaker calls from any origin not listed. Scheme and host only, no path.'
+          ),
       },
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
     },
     async (args) =>
-      guard(auth, async () => {
+      guarded(auth, NOT_FOUND.app, async () => {
         assertAppAllowed(config, args.application);
         const { config: mmConfig, problems, cautions } = buildMatchmakerConfig(args);
 
@@ -1315,6 +1434,9 @@ export function registerTools(
             'The dashboard then shows the matchmaker API URL and auth token. Game clients call POST {api_url}/tickets ' +
               `with header "Authorization: <auth token>" and profile "${args.profile_name}", then poll GET {api_url}/memberships/{id} until it returns the server address.`,
             'That auth token is safe to ship in game clients: it grants no access to the Edgegap API.',
+            args.allowed_cors_origins?.length
+              ? `Browser clients are allowed from: ${args.allowed_cors_origins.join(', ')}. Add any other origin the game is served from (each staging or production URL) before uploading.`
+              : 'If game clients run in a browser (WebGL), set allowed_cors_origins to the origin of every page that serves the game, including http://localhost:<port> for local testing, or browsers will block the matchmaker calls.',
           ],
         });
       })
@@ -1347,6 +1469,29 @@ function registryCredentialsUnavailable(imageName?: string, tag?: string): strin
     'token as registry_username/registry_token.\n\n' +
     'Or push to any other registry Edgegap can pull from (Docker Hub, GHCR, ECR, GCR, GitLab) ' +
     'and pass its registry_username/registry_token to edgegap_create_app_version.'
+  );
+}
+
+/**
+ * What edgegap_create_app_version says when Edgegap could not log in to the
+ * registry to verify the image. The agent should not be handed the registry
+ * login just to get past this, so the dashboard route comes first.
+ */
+function registryLoginNeeded(repository: string, hadLogin: boolean): string {
+  return (
+    `Edgegap could not log in to ${repository} to verify the image, so the version was not ` +
+    'created. ' +
+    (hadLogin
+      ? 'The registry_username/registry_token given were rejected: check them.'
+      : 'Edgegap pulls images with a registry login set on the version, not your API token — ' +
+        'this applies to your own registry.edgegap.com project too.') +
+    '\n\nOptions:\n' +
+    '1. Create the version again with verify_image false, then have the developer open it in ' +
+    `the dashboard (${DASHBOARD_URL}) and add the registry username and token (for ` +
+    'registry.edgegap.com, the ones on the Container Registry page). Deployments fail to pull ' +
+    'until they do.\n' +
+    '2. If the developer chooses to give them to you, pass registry_username and registry_token. ' +
+    'They are registry-scoped, not the org API token. Do not write them into files.'
   );
 }
 

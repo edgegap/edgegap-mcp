@@ -15,8 +15,8 @@ const cases = [
     { application: 'my-game', name: 'v1', docker_repository: 'docker.io',
       docker_image: 'me/srv', docker_tag: 'abc', cpu_units: 512, memory_mb: 4096,
       ports: [{ port: 7777, protocol: 'UDP' }] }],
-  ['application outside allowlist', 'edgegap_list_app_versions',
-    { application: 'someone-elses-game' }],
+  ['deploy into an application outside allowlist', 'edgegap_deploy',
+    { application: 'someone-elses-game', version: 'v1', users: { ip_addresses: ['203.0.113.1'] } }],
 ];
 
 for (const [label, name, args] of cases) {

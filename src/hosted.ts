@@ -7,6 +7,8 @@
  * and discarded. See worker/DECISION.md.
  */
 
+import { stripTokenPrefix } from './config.js';
+
 const TOKEN_URL = 'https://app.edgegap.com/user-settings?tab=tokens';
 
 /**
@@ -34,7 +36,8 @@ export type TokenResult =
 export function extractToken(header: string | null | undefined): TokenResult {
   if (!header) return { token: undefined, problem: 'absent' };
 
-  const value = header.replace(/^Bearer\s+/i, '').replace(/^token\s+/i, '').trim();
+  // Any run of "Bearer "/"token ", so "token token <uuid>" still works.
+  const value = stripTokenPrefix(header);
   if (!value) return { token: undefined, problem: 'absent' };
   if (!looksLikeEdgegapToken(value)) return { token: undefined, problem: 'foreign' };
 

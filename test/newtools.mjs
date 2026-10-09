@@ -66,7 +66,29 @@ const mock = http.createServer((req, res) => {
       case 'DELETE /v1/relays/sessions/abc123-S':
         return send(204);
       case 'GET /v1/app/my-game/versions':
-        return send(200, { versions: [{ name: 'build-42', is_active: true, ports: [{ port: 7777, protocol: 'UDP', name: 'gameport' }] }, { name: 'no-ports', is_active: true, ports: [] }], total_count: 2 });
+        // Shapes as the live API returns them (2026-10-08): the registry token
+        // comes back in plain text, and WS ports come back as "Websocket".
+        return send(200, { versions: [
+          { name: 'build-42', is_active: true, private_username: 'robot$pull', private_token: 'registry-secret-do-not-leak', ports: [{ port: 7777, protocol: 'UDP', name: 'gameport', tls_upgrade: false }] },
+          { name: 'web-1', is_active: true, private_username: null, private_token: null, ports: [{ port: 7778, protocol: 'Websocket', name: 'gameport', tls_upgrade: true }] },
+          { name: 'no-ports', is_active: true, ports: [] },
+        ], total_count: 3 });
+      case 'POST /v1/app/my-game/version': {
+        const b = JSON.parse(body);
+        // verify_image pulls with the version's registry login; without one,
+        // Edgegap answers this bare 400, even for registry.edgegap.com.
+        if (b.verify_image && !b.private_username) return send(400, { message: 'Unable to login with the given credentials' });
+        return send(200, { success: true, version: { name: b.name } });
+      }
+      // A request_id Edgegap does not know is a 400, not a 404 (live, 2026-10-08).
+      case 'GET /v1/status/unknown-id':
+        return send(400, { message: 'Bad Request ID provided' });
+      case 'GET /v1/deployment/unknown-id/container-logs':
+        return send(400, { message: 'The browser (or proxy) sent a request that this server could not understand.' });
+      case 'GET /v1/status/gone-deployment':
+        return send(404, { message: 'Deployment not found' });
+      case 'GET /v1/deployment/gone-deployment/container-logs':
+        return send(404, { message: 'Deployment not found' });
       case 'GET /v1/app/ghost-game/versions':
         return send(404, { message: 'App not found' });
       case 'GET /v1/deployments':
@@ -311,6 +333,70 @@ res = await c.callTool({ name: 'edgegap_build_matchmaker_config', arguments: { .
 check('missing application is reported', res.isError && /does not exist/.test(text(res)));
 res = await c.callTool({ name: 'edgegap_build_matchmaker_config', arguments: { ...mm, min_team_size: 3, verify_version: false } });
 check('min > max team size is reported', res.isError && /greater than max_team_size/.test(text(res)));
+
+r = json(await c.callTool({ name: 'edgegap_build_matchmaker_config', arguments: { ...mm, allowed_cors_origins: ['https://mygame.example.com', 'http://localhost:8080'] } }));
+check('allowed_cors_origins lands in the config', JSON.stringify(r.config?.allowed_cors_origins) === JSON.stringify(['https://mygame.example.com', 'http://localhost:8080']));
+check('allowed origins are repeated in next_steps', r.next_steps?.some((s) => s.includes('http://localhost:8080')));
+r = json(await c.callTool({ name: 'edgegap_build_matchmaker_config', arguments: mm }));
+check('no origins: key left out, WebGL reminder in next_steps', r.config?.allowed_cors_origins === undefined && r.next_steps?.some((s) => /WebGL/.test(s) && /allowed_cors_origins/.test(s)));
+res = await c.callTool({ name: 'edgegap_build_matchmaker_config', arguments: { ...mm, allowed_cors_origins: ['https://mygame.example.com/play/'] } });
+check('an origin with a path is refused', res.isError && /not an origin/.test(text(res)));
+
+// ------------------------------------------------- app versions (e2e feedback) ----
+console.log('\napp versions');
+const ver = { application: 'my-game', name: 'v-new', docker_repository: 'registry.edgegap.com', docker_image: 'my-org-abc123/my-game-server', docker_tag: 'build-42', cpu_units: 512, memory_mb: 1024 };
+calls.length = 0;
+r = json(await c.callTool({ name: 'edgegap_create_app_version', arguments: { ...ver, ports: [{ port: 7778, protocol: 'WS', tls_upgrade: true }] } }));
+let sent = calls.find((x) => x.method === 'POST')?.body;
+check('tls_upgrade is sent on the port', sent?.ports?.[0]?.tls_upgrade === true, JSON.stringify(sent?.ports));
+check('no registry login on registry.edgegap.com: warned the pull will fail', r.notes?.some((n) => /registry login/.test(n) && /424/.test(n)));
+calls.length = 0;
+r = json(await c.callTool({ name: 'edgegap_create_app_version', arguments: { ...ver, ports: [{ port: 7777, protocol: 'UDP' }] } }));
+check('tls_upgrade defaults to false', calls.find((x) => x.method === 'POST')?.body?.ports?.[0]?.tls_upgrade === false);
+r = json(await c.callTool({ name: 'edgegap_create_app_version', arguments: { ...ver, ports: [{ port: 7778, protocol: 'WS' }] } }));
+check('WS port without TLS: suggests tls_upgrade for WebGL', r.notes?.some((n) => /tls_upgrade: true/.test(n) && /WebGL/.test(n)));
+res = await c.callTool({ name: 'edgegap_create_app_version', arguments: { ...ver, ports: [{ port: 7777, protocol: 'UDP', tls_upgrade: true }] } });
+check('tls_upgrade on a UDP port is refused locally', res.isError && /only works on WS and HTTP/.test(text(res)));
+
+res = await c.callTool({ name: 'edgegap_create_app_version', arguments: { ...ver, verify_image: true, ports: [{ port: 7777, protocol: 'UDP' }] } });
+t = text(res);
+check('verify_image without a login: explained, not the raw 400', res.isError && /not your API token/.test(t) && /registry\.edgegap\.com project too/.test(t));
+check('verify_image without a login: offers the dashboard route first', /1\. Create the version again with verify_image false/.test(t) && /dashboard/.test(t));
+
+r = json(await c.callTool({ name: 'edgegap_list_app_versions', arguments: { application: 'my-game' } }));
+const byName = Object.fromEntries((r.versions ?? []).map((v) => [v.name, v]));
+check('versions show whether a registry login is set', byName['build-42']?.registry_credentials_set === true && byName['web-1']?.registry_credentials_set === false);
+check('versions show tls_upgrade per port', byName['web-1']?.ports?.[0]?.tls_upgrade === true && byName['build-42']?.ports?.[0]?.tls_upgrade === false);
+check('the registry token from the API never reaches the agent', !JSON.stringify(r).includes('registry-secret-do-not-leak'));
+
+// ------------------------------------------------------------- 404 hints ----
+console.log('\n404 hints');
+res = await c.callTool({ name: 'edgegap_get_deployment_logs', arguments: { request_id: 'gone-deployment' } });
+t = text(res);
+check('logs of a stopped deployment: explains they are gone without Endpoint Storage', /Endpoint Storage/.test(t) && /stopped/.test(t));
+check('logs 404: does not point at applications', !/edgegap_list_apps/.test(t));
+res = await c.callTool({ name: 'edgegap_get_deployment', arguments: { request_id: 'gone-deployment' } });
+check('deployment 404: points at edgegap_list_deployments, not apps', /edgegap_list_deployments/.test(text(res)) && !/edgegap_list_apps/.test(text(res)));
+res = await c.callTool({ name: 'edgegap_list_app_versions', arguments: { application: 'ghost-game' } });
+check('app 404: still points at edgegap_list_apps', /edgegap_list_apps/.test(text(res)));
+res = await c.callTool({ name: 'edgegap_get_deployment', arguments: { request_id: 'unknown-id' } });
+check('unknown request_id (400): explained as a bad or expired request_id', /no deployment with that request_id/.test(text(res)));
+res = await c.callTool({ name: 'edgegap_get_deployment_logs', arguments: { request_id: 'unknown-id' } });
+check('logs for an unknown request_id (400): same explanation as a stopped one', /Endpoint Storage/.test(text(res)));
+
+// ------------------------------------------------- WebGL in the generator ----
+console.log('\nWebGL / WebSocket ports');
+r = json(await c.callTool({ name: 'edgegap_generate_dockerfile', arguments: { engine: 'unity', netcode: 'mirror-simpleweb', ports: [{ port: 7778, protocol: 'WS' }] } }));
+check('WebSocket netcode: generator turns on tls_upgrade', r.ports_for_create_app_version?.[0]?.tls_upgrade === true);
+check('WebSocket netcode: and says so as an assumption', r.assumptions?.some((a) => /tls_upgrade/.test(a)));
+r = json(await c.callTool({ name: 'edgegap_generate_dockerfile', arguments: { engine: 'unity', netcode: 'mirror-simpleweb', ports: [{ port: 7778, protocol: 'WS', tls_upgrade: false }] } }));
+check('an explicit tls_upgrade: false is kept', r.ports_for_create_app_version?.[0]?.tls_upgrade === false);
+r = json(await c.callTool({ name: 'edgegap_generate_dockerfile', arguments: { engine: 'unity', netcode: 'mirror-kcp' } }));
+check('UDP netcode: no tls_upgrade', r.ports_for_create_app_version?.[0]?.tls_upgrade === undefined);
+r = json(await c.callTool({ name: 'edgegap_validate_server_config', arguments: { netcode: 'mirror-simpleweb', ports: [{ port: 7778, protocol: 'WS' }] } }));
+check('validator: WebSocket netcode without TLS is a warning', r.warnings?.some((w) => w.code === 'ws-no-tls'));
+r = json(await c.callTool({ name: 'edgegap_validate_server_config', arguments: { ports: [{ port: 7777, protocol: 'UDP', tls_upgrade: true }] } }));
+check('validator: tls_upgrade on UDP is an error', r.errors?.some((e) => e.code === 'tls-wrong-protocol'));
 await c.close();
 
 // ------------------------------------------------------------ read-only ----
@@ -329,7 +415,18 @@ await ro.close();
 const al = await connect({ EDGEGAP_APP_ALLOWLIST: 'other-game' });
 res = await al.callTool({ name: 'edgegap_build_matchmaker_config', arguments: mm });
 check('matchmaker builder respects EDGEGAP_APP_ALLOWLIST', res.isError && /ALLOWLIST/.test(text(res)));
+res = await al.callTool({ name: 'edgegap_create_app_version', arguments: { ...ver, ports: [{ port: 7777, protocol: 'UDP' }] } });
+check('create_app_version respects EDGEGAP_APP_ALLOWLIST', res.isError && /ALLOWLIST/.test(text(res)));
+res = await al.callTool({ name: 'edgegap_list_app_versions', arguments: { application: 'my-game' } });
+check('reads are not blocked by the allowlist (list_app_versions)', !res.isError && json(res).versions?.length === 3, text(res).slice(0, 120));
 await al.close();
+
+// ------------------------------------------------- token prefix in env ----
+const dbl = await connect({ EDGEGAP_API_TOKEN: 'token token fake-api-token' });
+calls.length = 0;
+await dbl.callTool({ name: 'edgegap_list_app_versions', arguments: { application: 'my-game' } });
+check('EDGEGAP_API_TOKEN "token token <value>" is sent as "token <value>"', calls.at(-1)?.auth === 'token fake-api-token', calls.at(-1)?.auth);
+await dbl.close();
 
 mock.close();
 console.log(failures === 0 ? '\nAll checks passed.' : `\n${failures} check(s) FAILED.`);

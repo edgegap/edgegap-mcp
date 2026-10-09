@@ -102,7 +102,7 @@ function main(): void {
     const auth = new StaticTokenProvider(token, problem ? unavailableMessage(problem) : undefined);
 
     const server = new McpServer(
-      { name: 'edgegap', version: '0.3.2' },
+      { name: 'edgegap', version: '0.3.3' },
       { instructions: serverInstructions('hosted') }
     );
     registerTools(server, new EdgegapClient(config, auth), config, auth);
