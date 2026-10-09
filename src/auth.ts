@@ -39,7 +39,7 @@
  */
 
 import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { Config } from './config.js';
+import { Config, stripTokenPrefix } from './config.js';
 
 export class TokenUnavailableError extends Error {}
 
@@ -224,7 +224,7 @@ export class TokenProvider implements TokenSource {
     }
 
     const raw = String(result.content.api_token ?? '').trim();
-    const token = raw.replace(/^token\s+/i, '');
+    const token = stripTokenPrefix(raw);
     if (!token) {
       throw new TokenUnavailableError('An empty token was submitted. Nothing was stored.');
     }

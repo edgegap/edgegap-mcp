@@ -45,8 +45,8 @@ export function loadConfig(
   const raw = env.EDGEGAP_API_TOKEN?.trim();
 
   // Tokens are pasted by hand often enough that it is worth catching the
-  // common mistake of including the "token " prefix twice.
-  const envToken = raw ? raw.replace(/^token\s+/i, '') : undefined;
+  // common mistake of including the "token " prefix, once or more.
+  const envToken = raw ? stripTokenPrefix(raw) || undefined : undefined;
 
   return {
     envToken,
@@ -74,6 +74,19 @@ export function assertAppAllowed(config: Config, appName: string): void {
         `allowlist rather than trying another application name.`
     );
   }
+}
+
+/**
+ * Removes any run of "Bearer " / "token " prefixes from a pasted credential.
+ *
+ * The prefix gets doubled easily: the dashboard shows the header form
+ * ("token <uuid>"), so an EDGEGAP_API_TOKEN that already carries it, dropped
+ * into a config that adds "token " again, sends "token token <uuid>". Stripping
+ * only one left "token <uuid>", which the hosted server then mistook for a
+ * foreign credential and refused with a misleading message.
+ */
+export function stripTokenPrefix(value: string): string {
+  return value.trim().replace(/^(?:(?:bearer|token)\s+)+/i, '').trim();
 }
 
 /**

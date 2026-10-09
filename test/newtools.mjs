@@ -421,6 +421,13 @@ res = await al.callTool({ name: 'edgegap_list_app_versions', arguments: { applic
 check('reads are not blocked by the allowlist (list_app_versions)', !res.isError && json(res).versions?.length === 3, text(res).slice(0, 120));
 await al.close();
 
+// ------------------------------------------------- token prefix in env ----
+const dbl = await connect({ EDGEGAP_API_TOKEN: 'token token fake-api-token' });
+calls.length = 0;
+await dbl.callTool({ name: 'edgegap_list_app_versions', arguments: { application: 'my-game' } });
+check('EDGEGAP_API_TOKEN "token token <value>" is sent as "token <value>"', calls.at(-1)?.auth === 'token fake-api-token', calls.at(-1)?.auth);
+await dbl.close();
+
 mock.close();
 console.log(failures === 0 ? '\nAll checks passed.' : `\n${failures} check(s) FAILED.`);
 process.exit(failures === 0 ? 0 : 1);
