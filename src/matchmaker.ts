@@ -39,6 +39,47 @@ function seconds(d: string): number {
   return m[2] === 'ms' ? n / 1000 : m[2] === 's' ? n : m[2] === 'm' ? n * 60 : n * 3600;
 }
 
+type Expansion = NonNullable<MatchmakerInput['expansions']>[number];
+
+function checkDurations(expiration: string, removal: string, problems: string[], cautions: string[]) {
+  for (const [field, value] of [['ticket_expiration', expiration], ['ticket_removal', removal]] as const) {
+    if (!DURATION.test(value)) problems.push(`${field} "${value}" is not a duration like "30s", "5m" or "1h".`);
+  }
+  if (seconds(expiration) < 60) {
+    cautions.push(`ticket_expiration ${expiration} is short. Tickets must outlive the queue wait plus server start-up, or players are dropped before the match is ready.`);
+  }
+}
+
+function expansionStep(e: Expansion, input: MatchmakerInput, useLatency: boolean, problems: string[]) {
+  const step: Record<string, Record<string, number>> = {};
+  if (e.min_team_size !== undefined) {
+    if (e.min_team_size > input.max_team_size) {
+      problems.push(`expansion at ${e.after_seconds}s sets min_team_size ${e.min_team_size} above max_team_size ${input.max_team_size}.`);
+    }
+    step.match_size = { min_team_size: e.min_team_size };
+  }
+  if (e.max_latency_ms !== undefined) {
+    if (!useLatency) {
+      problems.push(`expansion at ${e.after_seconds}s relaxes max_latency_ms, but no latency rule is configured. Set max_latency_ms on the profile too.`);
+    }
+    step.beacons = { max_latency: e.max_latency_ms };
+  }
+  return step;
+}
+
+function buildExpansions(input: MatchmakerInput, useLatency: boolean, problems: string[]) {
+  const expansions: Record<string, Record<string, Record<string, number>>> = {};
+  let lastAfter = 0;
+  for (const e of [...(input.expansions ?? [])].sort((a, b) => a.after_seconds - b.after_seconds)) {
+    const step = expansionStep(e, input, useLatency, problems);
+    if (Object.keys(step).length === 0) continue;
+    if (e.after_seconds === lastAfter) problems.push(`two expansions share after_seconds ${e.after_seconds}.`);
+    lastAfter = e.after_seconds;
+    expansions[String(e.after_seconds)] = step;
+  }
+  return expansions;
+}
+
 export function buildMatchmakerConfig(input: MatchmakerInput) {
   const problems: string[] = [];
   const cautions: string[] = [];
@@ -52,12 +93,7 @@ export function buildMatchmakerConfig(input: MatchmakerInput) {
 
   const expiration = input.ticket_expiration ?? '5m';
   const removal = input.ticket_removal ?? '1m';
-  for (const [field, value] of [['ticket_expiration', expiration], ['ticket_removal', removal]] as const) {
-    if (!DURATION.test(value)) problems.push(`${field} "${value}" is not a duration like "30s", "5m" or "1h".`);
-  }
-  if (seconds(expiration) < 60) {
-    cautions.push(`ticket_expiration ${expiration} is short. Tickets must outlive the queue wait plus server start-up, or players are dropped before the match is ready.`);
-  }
+  checkDurations(expiration, removal, problems, cautions);
 
   const rules: Record<string, unknown> = {
     match_size: {
@@ -80,27 +116,7 @@ export function buildMatchmakerConfig(input: MatchmakerInput) {
     };
   }
 
-  const expansions: Record<string, Record<string, Record<string, number>>> = {};
-  let lastAfter = 0;
-  for (const e of [...(input.expansions ?? [])].sort((a, b) => a.after_seconds - b.after_seconds)) {
-    const step: Record<string, Record<string, number>> = {};
-    if (e.min_team_size !== undefined) {
-      if (e.min_team_size > input.max_team_size) {
-        problems.push(`expansion at ${e.after_seconds}s sets min_team_size ${e.min_team_size} above max_team_size ${input.max_team_size}.`);
-      }
-      step.match_size = { min_team_size: e.min_team_size };
-    }
-    if (e.max_latency_ms !== undefined) {
-      if (!useLatency) {
-        problems.push(`expansion at ${e.after_seconds}s relaxes max_latency_ms, but no latency rule is configured. Set max_latency_ms on the profile too.`);
-      }
-      step.beacons = { max_latency: e.max_latency_ms };
-    }
-    if (Object.keys(step).length === 0) continue;
-    if (e.after_seconds === lastAfter) problems.push(`two expansions share after_seconds ${e.after_seconds}.`);
-    lastAfter = e.after_seconds;
-    expansions[String(e.after_seconds)] = step;
-  }
+  const expansions = buildExpansions(input, useLatency, problems);
   if (input.team_count * input.min_team_size === 1) {
     cautions.push('A match of one player starts a server per ticket. Fine for testing, costly in production.');
   }
