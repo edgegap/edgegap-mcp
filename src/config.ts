@@ -18,6 +18,48 @@ export interface Config {
   maxDurationCeiling: number;
   /** Timeout for a single HTTP call, ms. */
   requestTimeoutMs: number;
+  /** "local" for the stdio server, "hosted" for the Worker and HTTP server. */
+  transport: 'local' | 'hosted';
+}
+
+/** Edgegap's production API. A base URL naming this host must be exactly it. */
+export const DEFAULT_API_HOST = 'api.edgegap.com';
+
+/**
+ * Validates EDGEGAP_BASE_URL and returns it without a trailing slash.
+ *
+ * The token travels in a header to whatever host this names, so a typo or a
+ * plain-http URL is a credential leak, not a misconfiguration. A URL naming
+ * Edgegap's own host must be https; anything else is labelled "custom" on
+ * every tool result (see hostLabel) so it cannot go unnoticed.
+ */
+export function parseBaseUrl(raw: string | undefined): string {
+  const value = raw?.trim() || `https://${DEFAULT_API_HOST}`;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new ConfigError(`EDGEGAP_BASE_URL "${value}" is not a valid URL.`);
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    throw new ConfigError(`EDGEGAP_BASE_URL must be an http(s) URL, not ${url.protocol}`);
+  }
+  if (url.hostname === DEFAULT_API_HOST && (url.protocol !== 'https:' || url.port !== '')) {
+    throw new ConfigError(
+      `EDGEGAP_BASE_URL names ${DEFAULT_API_HOST} but is not https://${DEFAULT_API_HOST}. ` +
+        'The API token would be sent unencrypted or to the wrong port. Use https.'
+    );
+  }
+  if (url.username || url.password) {
+    throw new ConfigError('EDGEGAP_BASE_URL must not contain a username or password.');
+  }
+  return value.replace(/\/+$/, '');
+}
+
+/** "api.edgegap.com", or "custom · <host>" when EDGEGAP_BASE_URL points elsewhere. */
+export function hostLabel(config: Pick<Config, 'baseUrlV1'>): string {
+  const host = new URL(config.baseUrlV1).host;
+  return host === DEFAULT_API_HOST ? host : `custom · ${host}`;
 }
 
 export class ConfigError extends Error {}
@@ -50,9 +92,9 @@ export function loadConfig(
 
   return {
     envToken,
-    baseUrlV1: env.EDGEGAP_BASE_URL?.trim() || 'https://api.edgegap.com',
-    baseUrlV2:
-      (env.EDGEGAP_BASE_URL?.trim() || 'https://api.edgegap.com') + '/v2',
+    baseUrlV1: parseBaseUrl(env.EDGEGAP_BASE_URL),
+    baseUrlV2: parseBaseUrl(env.EDGEGAP_BASE_URL) + '/v2',
+    transport: 'local',
     readOnly: env.EDGEGAP_READ_ONLY === '1' || env.EDGEGAP_READ_ONLY === 'true',
     appAllowlist: parseList(env.EDGEGAP_APP_ALLOWLIST),
     maxDurationCeiling: parseIntEnv(env.EDGEGAP_MAX_DURATION_MINUTES, 60),

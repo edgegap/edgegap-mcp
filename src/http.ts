@@ -17,6 +17,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { loadConfig, ConfigError } from './config.js';
 import { EdgegapClient } from './client.js';
 import { registerTools, serverInstructions } from './tools.js';
+import { VERSION } from './version.js';
 import { StaticTokenProvider } from './auth.js';
 import { extractToken, unavailableMessage } from './hosted.js';
 
@@ -56,7 +57,7 @@ function main(): void {
   let config;
   try {
     // No ambient credential, by design: every token comes from the request.
-    config = { ...loadConfig(), envToken: undefined };
+    config = { ...loadConfig(), envToken: undefined, transport: 'hosted' as const };
   } catch (err) {
     if (err instanceof ConfigError) {
       process.stderr.write(`[edgegap-mcp] ${err.message}\n`);
@@ -102,10 +103,13 @@ function main(): void {
     const auth = new StaticTokenProvider(token, problem ? unavailableMessage(problem) : undefined);
 
     const server = new McpServer(
-      { name: 'edgegap', version: '0.3.3' },
+      { name: 'edgegap', version: VERSION },
       { instructions: serverInstructions('hosted') }
     );
-    registerTools(server, new EdgegapClient(config, auth), config, auth);
+    const client = new EdgegapClient(config, auth, {
+      clientName: () => server.server.getClientVersion()?.name,
+    });
+    registerTools(server, client, config, auth);
 
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,

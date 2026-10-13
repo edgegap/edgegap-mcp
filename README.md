@@ -157,7 +157,7 @@ To keep your API token on your own machine, run the server locally instead. Leav
 }
 ```
 
-Needs Node 18+. Pin a version in production (`@edgegap/mcp@0.3.3`) rather than floating on latest. Registered in the official MCP registry as `dev.edgegap/mcp`.
+Needs Node 18+. Pin a version in production (`@edgegap/mcp@0.4.0`) rather than floating on latest. Registered in the official MCP registry as `dev.edgegap/mcp`.
 
 The local server can also limit what an agent can do. These variables have no effect on the hosted endpoint at `mcp.edgegap.dev`:
 
@@ -171,7 +171,11 @@ The local server can also limit what an agent can do. These variables have no ef
 
 ## 🧰 Tools
 
-Your agent picks the right tool from your request. You don't need to name them, but knowing what's available helps you ask. Tools marked ● change something in your account and are hidden when `EDGEGAP_READ_ONLY=1`.
+Your agent picks the right tool from your request. You don't need to name them, but knowing what's available helps you ask. Tools marked ● change something in your account, accept `dry_run`, and are hidden when `EDGEGAP_READ_ONLY=1`.
+
+| Tool | What it does |
+| --- | --- |
+| `edgegap_context` | Shows which API this server talks to, its version, local or hosted, and the guardrails in force. No API call; never shows the token. |
 
 ### Before Your First Deployment
 
@@ -190,12 +194,12 @@ Your agent picks the right tool from your request. You don't need to name them, 
 | `edgegap_create_app` ● | Creates an application. |
 | `edgegap_list_app_versions` | Lists versions with their image, resources, ports (with TLS Upgrade), and whether a registry login is set. |
 | `edgegap_create_app_version` ● | Registers a container image as a deployable version. Supports TLS Upgrade on WS and HTTP ports, which browser (WebGL) clients need for `wss://`. |
-| `edgegap_deploy` ● | Deploys an authoritative dedicated server close to your players. |
+| `edgegap_deploy` ● | Deploys an authoritative dedicated server close to your players. Always tagged `edgegap-mcp`, and reports when Edgegap will stop it. |
 | `edgegap_wait_for_deployment` | Waits until the server is ready and returns the connection address. |
 | `edgegap_get_deployment` | Reads a deployment's status. |
-| `edgegap_list_deployments` | Lists running deployments, filtered by application, version, status, tags and more, and sorted by age. Finds servers left running. See [Filter Deployments](https://docs.edgegap.com/learn/orchestration/deployments#filter-deployments). |
+| `edgegap_list_deployments` | Lists running deployments, filtered by application, version, status, tags and more, and sorted by age. Finds servers left running; `only_agent_deployments: true` lists every one an agent started. See [Filter Deployments](https://docs.edgegap.com/learn/orchestration/deployments#filter-deployments). |
 | `edgegap_get_deployment_logs` | Reads container logs and crash details while the deployment runs. After it stops, logs are only kept if Endpoint Storage was set up. |
-| `edgegap_stop_deployment` ● | Stops one deployment. |
+| `edgegap_stop_deployment` ● | Stops one deployment, by its exact request ID. No bulk stop. |
 
 ### Matchmaking
 
@@ -226,6 +230,22 @@ A relay is not a game server: it forwards traffic while one player's game hosts 
 * *"Create a matchmaker config for 2v2 matches on my latest version."*
 * *"My deployment failed. Read the logs and tell me why."*
 * *"My game uses host-client networking. Set up an Edgegap relay for two players."*
+
+## 🛡️ Guardrails
+
+Your API token can do anything in your organization, so the server adds its own limits around what an agent does with it. They apply in both the local server and the hosted endpoint.
+
+| Guardrail | What it does |
+| --- | --- |
+| Dry run | Every tool that changes something takes `dry_run: true`: it returns the exact method, host, path and body, with the token, registry tokens and env values masked, and sends nothing. Local checks still run. |
+| No token in containers | A deploy or version is refused, with nothing sent, if your API token appears in an env var name or value, a tag, or a webhook URL. Env values are never echoed back. |
+| Agent tag | Every deployment gets the `edgegap-mcp` tag, even when the agent passes its own tags. `edgegap_list_deployments` with `only_agent_deployments: true` finds them all. |
+| Auto-stop | Every deploy reports when Edgegap will stop it: the version's `max_duration`, capped at `EDGEGAP_MAX_DURATION_MINUTES` (default 60) for versions the agent creates. Edgegap has no per-deployment time limit, so a version made elsewhere can run up to its own limit (1440 minutes by default); the result warns when it is over an hour or unlimited. |
+| Strict stop | `edgegap_stop_deployment` stops one deployment by its exact request ID. Empty IDs, wildcards and lists are refused. There is no bulk stop. |
+| Host on every result | Every result starts with the API host, e.g. `[api.edgegap.com]`, or `[custom · host]` when `EDGEGAP_BASE_URL` points elsewhere. A base URL naming `api.edgegap.com` must be exactly `https://api.edgegap.com`, or the server refuses to start. |
+| Redaction | The token is stripped from every error before it reaches the agent. |
+
+The server identifies itself with `User-Agent: edgegap-mcp/<version> (<MCP client name>)` on every API call, and sends nothing else about you or your machine.
 
 ## 🚨 Troubleshooting
 

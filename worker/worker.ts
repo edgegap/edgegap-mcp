@@ -41,6 +41,7 @@ import { StaticTokenProvider } from '../src/auth.js';
 import { registerTools, serverInstructions } from '../src/tools.js';
 import type { Config } from '../src/config.js';
 import { extractToken, unavailableMessage } from '../src/hosted.js';
+import { VERSION } from '../src/version.js';
 
 export interface Env {
   EDGEGAP_APP_ALLOWLIST?: string;
@@ -65,6 +66,7 @@ function configForRequest(env: Env): Config {
       .filter(Boolean),
     maxDurationCeiling: Number.parseInt(env.EDGEGAP_MAX_DURATION_MINUTES ?? '60', 10) || 60,
     requestTimeoutMs: 25_000, // inside the Worker subrequest budget
+    transport: 'hosted',
   };
 }
 
@@ -88,7 +90,7 @@ export default {
 
     const handler = createMcpHandler(() => {
       const server = new McpServer(
-        { name: 'edgegap', version: '0.3.3' },
+        { name: 'edgegap', version: VERSION },
         { instructions: serverInstructions('hosted') }
       );
 
@@ -106,7 +108,12 @@ export default {
       );
       registerTools(
         server as unknown as McpServerV1,
-        new EdgegapClient(config, auth),
+        new EdgegapClient(config, auth, {
+          // The stateless handler sees one request per server, so the client
+          // name is only known on initialize; the User-Agent omits it otherwise.
+          clientName: () =>
+            (server as unknown as McpServerV1).server.getClientVersion?.()?.name,
+        }),
         config,
         auth
       );

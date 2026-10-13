@@ -16,6 +16,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { loadConfig, ConfigError } from './config.js';
 import { EdgegapClient } from './client.js';
 import { registerTools, serverInstructions } from './tools.js';
+import { VERSION } from './version.js';
 import { TokenProvider, warnIfTokenInArgv } from './auth.js';
 
 async function main(): Promise<void> {
@@ -32,7 +33,7 @@ async function main(): Promise<void> {
   }
 
   const server = new McpServer(
-    { name: 'edgegap', version: '0.3.3' },
+    { name: 'edgegap', version: VERSION },
     { instructions: serverInstructions('local') }
   );
 
@@ -42,7 +43,10 @@ async function main(): Promise<void> {
   auth.attach(server.server);
   auth.installExitHandlers();
 
-  registerTools(server, new EdgegapClient(config, auth), config, auth);
+  const client = new EdgegapClient(config, auth, {
+    clientName: () => server.server.getClientVersion()?.name,
+  });
+  registerTools(server, client, config, auth);
 
   if (!config.envToken) {
     process.stderr.write(
