@@ -42,9 +42,12 @@ check('mcpName matches the registry name', pkg.mcpName === server.name, `${pkg.m
 const v = pkg.version;
 check(`server.json version is ${v}`, server.version === v, server.version);
 check(`server.json npm package version is ${v}`, server.packages?.[0]?.version === v, server.packages?.[0]?.version);
+const declared = readFileSync('src/version.ts', 'utf8').match(/VERSION = '([^']+)'/)?.[1];
+check(`src/version.ts is ${v}`, declared === v, declared ?? 'no VERSION found');
+// Every entry point reports VERSION rather than its own copy of the number.
 for (const file of ['src/index.ts', 'src/http.ts', 'worker/worker.ts']) {
-  const found = readFileSync(file, 'utf8').match(/name: 'edgegap', version: '([^']+)'/)?.[1];
-  check(`${file} reports ${v}`, found === v, found ?? 'no version string found');
+  const src = readFileSync(file, 'utf8');
+  check(`${file} reports VERSION, not a hardcoded number`, /name: 'edgegap', version: VERSION/.test(src) && !/version: '\d+\.\d+\.\d+'/.test(src));
 }
 
 console.log(failures === 0 ? '\nAll checks passed.' : `\n${failures} check(s) FAILED.`);

@@ -10,8 +10,9 @@
 
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { EdgegapClient, EdgegapApiError, DeploymentStatus, RelaySession } from './client.js';
-import { Config, assertAppAllowed, redact } from './config.js';
+import { EdgegapClient, EdgegapApiError, DeploymentStatus, RelaySession, PlannedRequest } from './client.js';
+import { Config, assertAppAllowed, redact, hostLabel } from './config.js';
+import { VERSION } from './version.js';
 import { TokenSource, TokenUnavailableError } from './auth.js';
 import {
   validateServerConfig,
@@ -72,9 +73,13 @@ export function serverInstructions(mode: 'local' | 'hosted'): string {
     '8. edgegap_stop_deployment when finished\n' +
     'To match players into those servers, edgegap_build_matchmaker_config produces the ' +
     'config the developer uploads in the dashboard.\n\n' +
-    'Deployments and relay sessions cost money while running. Tag test deployments, and ' +
-    'stop deployments and delete relay sessions you created before ending the task. If a ' +
+    'Deployments and relay sessions cost money while running. Stop deployments and delete ' +
+    'relay sessions you created before ending the task; edgegap_list_deployments with ' +
+    `only_agent_deployments: true lists every deployment tagged "${AGENT_TAG}". If a ` +
     'deployment errors, read the container logs before redeploying.\n\n' +
+    'Guardrails: edgegap_context shows which API and limits this session has. Every tool that ' +
+    'changes something takes dry_run: true to show the exact request and send nothing; use it ' +
+    'when unsure. Never put the API token in env vars, tags or URLs: such calls are refused.\n\n' +
     credentials +
     'That token is org-wide and cannot be scoped by Edgegap, so it authorises far more than ' +
     'any single task needs. Treat it as a supervised credential: do not use it for work the ' +
@@ -284,6 +289,118 @@ function buildUsers(input: z.infer<typeof userSchema>) {
   return users;
 }
 
+// ================================================================ guardrails ====
+
+/**
+ * Added to every deployment this server starts, whatever tags the caller
+ * passes, so agent deployments can always be found and cleaned up:
+ * edgegap_list_deployments with only_agent_deployments: true.
+ */
+export const AGENT_TAG = 'edgegap-mcp';
+
+/**
+ * A single Edgegap request_id ("61b1be8f54d9"). Anything else — empty, a
+ * wildcard, a list, whitespace — is refused before a stop is sent, so a stop
+ * can only ever hit the one deployment it names.
+ */
+const REQUEST_ID = /^[A-Za-z0-9]{6,64}$/;
+/** A single relay session_id, e.g. "0724828881e2-S". */
+const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9-]{4,63}$/;
+
+function checkRequestId(id: string): ToolResult | undefined {
+  if (REQUEST_ID.test(id)) return undefined;
+  return fail(
+    `"${id.slice(0, 80)}" is not a single request_id. Pass exactly one request_id, e.g. "61b1be8f54d9", ` +
+      'as returned by edgegap_deploy or edgegap_list_deployments. Wildcards, lists and empty IDs ' +
+      'are refused, and there is no bulk stop.'
+  );
+}
+
+/** The dry_run parameter every write tool takes. */
+const dryRunParam = z
+  .boolean()
+  .optional()
+  .describe(
+    'Show the exact request (method, host, path, body) with secrets masked, and send nothing. ' +
+      'Local checks still run. Use it to confirm a billable or destructive call before making it.'
+  );
+
+function dryRunResult(requests: PlannedRequest[], notes: string[] = []): ToolResult {
+  return ok({
+    dry_run: true,
+    sent: false,
+    requests,
+    notes: notes.length ? notes : undefined,
+    next_step: 'Nothing was sent. Call again without dry_run to do it.',
+  });
+}
+
+/**
+ * Refuses to put the server's own API token into a container or a URL.
+ *
+ * Env vars, tags and webhook URLs end up in places the agent and other people
+ * can read — container environments, the dashboard, third-party endpoints. An
+ * agent that "helpfully" passes the token along (say, so the game server can
+ * call the API) would hand an org-wide credential to all of them. Nothing is
+ * sent when this fires, and the matching value is never echoed.
+ *
+ * Returns undefined when clean. In a dry run the token is only checked if this
+ * session already holds one: a dry run must not trigger the token prompt.
+ */
+async function tokenLeak(
+  auth: TokenSource,
+  dryRun: boolean | undefined,
+  fields: Array<[label: string, value: string | undefined]>
+): Promise<ToolResult | undefined> {
+  const token = dryRun ? auth.current : await auth.get();
+  if (!token) return undefined;
+  const needles = [token, token.replace(/-/g, '')].filter((n) => n.length >= 16);
+  const hit = fields.find(([, v]) => v && needles.some((n) => v.toLowerCase().includes(n.toLowerCase())));
+  if (!hit) return undefined;
+  return fail(
+    `Refused: ${hit[0]} contains this server's Edgegap API token. Nothing was sent. ` +
+      'The token is organization-wide; putting it in a container, tag or URL exposes it to ' +
+      'everything that can read those. If the game server needs to call Edgegap, give it a ' +
+      'separate, purpose-made credential, and never this one.'
+  );
+}
+
+/**
+ * How long a new deployment can run before Edgegap stops it, from the
+ * version's max_duration. The API takes no per-deployment limit, so this is
+ * the only bound there is, and the agent should hear it on every deploy.
+ */
+function autoStop(maxDuration: number | undefined): Record<string, unknown> {
+  if (maxDuration === undefined || maxDuration === null) {
+    return { auto_stop: 'unknown: the version did not report max_duration. Stop this deployment when done.' };
+  }
+  if (maxDuration <= 0) {
+    return {
+      auto_stop: 'none',
+      warning:
+        'This version has no max_duration, so the deployment runs and bills until it is stopped. ' +
+        'Stop it with edgegap_stop_deployment when done, or give the version a max_duration.',
+    };
+  }
+  const hours = maxDuration >= 120 ? ` (${Math.round(maxDuration / 60)} hours)` : '';
+  return {
+    auto_stop_after_minutes: maxDuration,
+    ...(maxDuration > 60
+      ? {
+          warning:
+            `Edgegap stops this deployment after ${maxDuration} minutes${hours}, the version's ` +
+            'max_duration. Stop it yourself when done testing; versions created with ' +
+            'edgegap_create_app_version are capped by EDGEGAP_MAX_DURATION_MINUTES instead.',
+        }
+      : {}),
+  };
+}
+
+/** Prepends "[api.edgegap.com]" (or "[custom · host]") to a tool result. */
+function withHost(result: ToolResult, label: string): ToolResult {
+  return { ...result, content: [{ type: 'text', text: `[${label}]` }, ...result.content] };
+}
+
 export function registerTools(
   server: McpServer,
   client: EdgegapClient,
@@ -292,8 +409,66 @@ export function registerTools(
 ): void {
   const mutating = !config.readOnly;
 
+  // Every result names the API host it came from, first, so a session pointed
+  // at a custom EDGEGAP_BASE_URL can never be mistaken for production.
+  const label = hostLabel(config);
+  const tool = ((name: string, def: unknown, cb: (...a: unknown[]) => Promise<ToolResult>) =>
+    server.registerTool(name, def as never, (async (...a: unknown[]) =>
+      withHost(await cb(...a), label)) as never)) as unknown as typeof server.registerTool;
+
+  // ---------------------------------------------------------------- 0 ----
+  // No token, no network: describes this server's own configuration, so an
+  // agent can check where it is pointed and what is allowed before acting.
+  tool(
+    'edgegap_context',
+    {
+      title: 'Show this Edgegap MCP server\'s configuration',
+      description:
+        'Report which Edgegap API this server talks to, its version, whether it is the local or ' +
+        'hosted server, and the guardrails in force: read-only mode, application allowlist, ' +
+        'max_duration ceiling, the tag forced onto every deployment, and which tools support ' +
+        'dry_run. Call it first when unsure what this session is allowed to do, or before ' +
+        'anything billable. Makes no API call and never shows the token.',
+      inputSchema: {},
+      annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    async () => {
+      const hosted = config.transport === 'hosted';
+      return ok({
+        server: `@edgegap/mcp ${VERSION}`,
+        transport: hosted ? 'hosted (Streamable HTTP)' : 'local (stdio)',
+        api_host: label,
+        api_base_url: config.baseUrlV1,
+        token: hosted
+          ? auth.current
+            ? 'received on this request\'s Authorization header'
+            : 'none on this request: send it as an Authorization header'
+          : config.envToken
+            ? 'from EDGEGAP_API_TOKEN'
+            : auth.current
+              ? 'provided by the developer this session (memory only)'
+              : 'not yet provided: the developer is asked on first use',
+        token_scope: 'organization-wide (Edgegap cannot scope tokens)',
+        read_only: config.readOnly,
+        app_allowlist: config.appAllowlist.length ? config.appAllowlist : 'none (all applications)',
+        max_duration_ceiling_minutes: config.maxDurationCeiling,
+        forced_deploy_tag: AGENT_TAG,
+        guardrails: {
+          dry_run: mutating
+            ? 'deploy, stop_deployment, create_app, create_app_version, create/authorize/delete relay'
+            : 'n/a: read-only, no write tools are registered',
+          token_in_container: 'deploys and versions are refused if the API token appears in an env var, tag or webhook URL',
+          stop: 'one exact request_id per call; no bulk stop',
+          auto_stop: 'each deploy reports its version\'s max_duration; Edgegap has no per-deployment time limit',
+          results: `every result starts with [${label}]`,
+        },
+        user_agent: `edgegap-mcp/${VERSION} (<MCP client name>)`,
+      });
+    }
+  );
+
   // ---------------------------------------------------------------- 1 ----
-  server.registerTool(
+  tool(
     'edgegap_list_apps',
     {
       title: 'List Edgegap applications',
@@ -321,7 +496,7 @@ export function registerTools(
 
   // ---------------------------------------------------------------- 2 ----
   if (mutating) {
-    server.registerTool(
+    tool(
       'edgegap_create_app',
       {
         title: 'Create an Edgegap application',
@@ -336,17 +511,20 @@ export function registerTools(
             .max(64)
             .describe('Application name, 3-64 chars. Usually the game or project name.'),
           is_active: z.boolean().optional().describe('Whether deployments are allowed. Default true.'),
+          dry_run: dryRunParam,
         },
         annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true },
       },
-      async ({ name, is_active }) =>
+      async ({ name, is_active, dry_run }) =>
         guard(auth, async () => {
           assertAppAllowed(config, name);
-          const res = await client.createApp({
-            name,
-            is_active: is_active ?? true,
-            image: PLACEHOLDER_IMAGE,
-          });
+          const body = { name, is_active: is_active ?? true, image: PLACEHOLDER_IMAGE };
+          if (dry_run) {
+            const dry = client.dryRun();
+            await dry.client.createApp(body);
+            return dryRunResult(dry.requests);
+          }
+          const res = await client.createApp(body);
           return ok({
             created: res.name,
             active: res.is_active,
@@ -357,7 +535,7 @@ export function registerTools(
   }
 
   // ---------------------------------------------------------------- 3 ----
-  server.registerTool(
+  tool(
     'edgegap_list_app_versions',
     {
       title: 'List versions of an application',
@@ -400,7 +578,7 @@ export function registerTools(
 
   // ---------------------------------------------------------------- 4 ----
   if (mutating) {
-    server.registerTool(
+    tool(
       'edgegap_create_app_version',
       {
         title: 'Create an application version',
@@ -469,13 +647,24 @@ export function registerTools(
           env: z
             .array(z.object({ key: z.string(), value: z.string() }))
             .optional()
-            .describe('Environment variables injected into the container.'),
+            .describe('Environment variables injected into the container. Values are never echoed back.'),
+          dry_run: dryRunParam,
         },
         annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true },
       },
       async (args) =>
         guarded(auth, NOT_FOUND.app, async () => {
           assertAppAllowed(config, args.application);
+
+          const leak = await tokenLeak(auth, args.dry_run, [
+            ...(args.env ?? []).flatMap((e): Array<[string, string]> => [
+              [`env var name "${e.key.slice(0, 40)}"`, e.key],
+              [`the value of env var "${e.key.slice(0, 40)}"`, e.value],
+            ]),
+            ['registry_username', args.registry_username],
+            ['registry_token', args.registry_token],
+          ]);
+          if (leak) return leak;
 
           if (args.memory_mb > args.cpu_units * 2) {
             return fail(
@@ -497,29 +686,37 @@ export function registerTools(
           const hasRegistryLogin = Boolean(args.registry_username && args.registry_token);
           const edgegapRegistry = /(^|\/\/)registry\.edgegap\.com\/?$/.test(args.docker_repository.trim());
 
+          const body = {
+            name: args.name,
+            is_active: true,
+            req_cpu: args.cpu_units,
+            req_memory: args.memory_mb,
+            docker_repository: args.docker_repository,
+            docker_image: args.docker_image,
+            docker_tag: args.docker_tag,
+            private_username: args.registry_username,
+            private_token: args.registry_token,
+            verify_image: args.verify_image ?? false,
+            max_duration: capped,
+            ports: args.ports.map((p) => ({
+              port: p.port,
+              protocol: p.protocol,
+              name: p.name ?? 'gameport',
+              to_check: p.to_check ?? true,
+              tls_upgrade: p.tls_upgrade ?? false,
+            })),
+            envs: args.env?.map((e) => ({ key: e.key, value: e.value, is_hidden: false })),
+          };
+
+          if (args.dry_run) {
+            const dry = client.dryRun();
+            await dry.client.createAppVersion(args.application, body);
+            return dryRunResult(dry.requests, capped < requested ? [`max_duration capped to ${capped} minutes by EDGEGAP_MAX_DURATION_MINUTES.`] : []);
+          }
+
           let res;
           try {
-            res = await client.createAppVersion(args.application, {
-              name: args.name,
-              is_active: true,
-              req_cpu: args.cpu_units,
-              req_memory: args.memory_mb,
-              docker_repository: args.docker_repository,
-              docker_image: args.docker_image,
-              docker_tag: args.docker_tag,
-              private_username: args.registry_username,
-              private_token: args.registry_token,
-              verify_image: args.verify_image ?? false,
-              max_duration: capped,
-              ports: args.ports.map((p) => ({
-                port: p.port,
-                protocol: p.protocol,
-                name: p.name ?? 'gameport',
-                to_check: p.to_check ?? true,
-                tls_upgrade: p.tls_upgrade ?? false,
-              })),
-              envs: args.env?.map((e) => ({ key: e.key, value: e.value, is_hidden: false })),
-            });
+            res = await client.createAppVersion(args.application, body);
           } catch (err) {
             // verify_image pulls with the version's registry login. Without one
             // — even for the org's own registry.edgegap.com project — Edgegap
@@ -561,7 +758,7 @@ export function registerTools(
 
   // ---------------------------------------------------------------- 5 ----
   if (mutating) {
-    server.registerTool(
+    tool(
       'edgegap_deploy',
       {
         title: 'Deploy a game server',
@@ -570,7 +767,11 @@ export function registerTools(
           'the players you specify. This is the recommended way to host a multiplayer match: the ' +
           'server owns the game state, so no player hosts it. Returns immediately with a request_id; the server is still starting and ' +
           'has no connection details yet. Follow this call with edgegap_wait_for_deployment to ' +
-          'get the address players connect to. Always stop deployments you started for testing.',
+          'get the address players connect to. Always stop deployments you started for testing. ' +
+          `Every deployment is tagged "${AGENT_TAG}" in addition to any tags you pass, so ` +
+          'edgegap_list_deployments with only_agent_deployments: true finds them all. Runs until ' +
+          'stopped or until the version\'s max_duration, which the result reports. Refused, with ' +
+          'nothing sent, if the API token appears in an env var or tag.',
         inputSchema: {
           application: z.string().describe('Application name.'),
           version: z.string().describe('Version name within the application.'),
@@ -578,13 +779,14 @@ export function registerTools(
           env: z
             .array(z.object({ key: z.string(), value: z.string() }))
             .optional()
-            .describe('Environment variables for this deployment only.'),
+            .describe('Environment variables for this deployment only. Values are never echoed back.'),
           tags: z
-            .array(z.string())
+            .array(z.string().min(1).max(40))
             .optional()
-            .describe('Tags for filtering later, e.g. ["agent-test"]. Recommended.'),
+            .describe(`Extra tags for filtering later, e.g. ["agent-test"]. "${AGENT_TAG}" is always added.`),
           cpu_units: z.number().int().min(256).optional().describe('Override the version CPU.'),
           memory_mb: z.number().int().min(256).optional().describe('Override the version memory.'),
+          dry_run: dryRunParam,
         },
         annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true },
       },
@@ -600,11 +802,24 @@ export function registerTools(
             );
           }
 
+          // Forced, whatever the caller passed: the tag is how agent
+          // deployments are found and cleaned up, so it cannot be optional.
+          const tags = [...new Set([...(args.tags ?? []), AGENT_TAG])];
+
+          const leak = await tokenLeak(auth, args.dry_run, [
+            ...(args.env ?? []).flatMap((e): Array<[string, string]> => [
+              [`env var name "${e.key.slice(0, 40)}"`, e.key],
+              [`the value of env var "${e.key.slice(0, 40)}"`, e.value],
+            ]),
+            ...tags.map((t): [string, string] => [`tag "${t.slice(0, 8)}…"`, t]),
+          ]);
+          if (leak) return leak;
+
           const body: Record<string, unknown> = {
             application: args.application,
             version: args.version,
             users,
-            tags: args.tags ?? ['mcp'],
+            tags,
           };
           if (args.env) {
             body.environment_variables = args.env.map((e) => ({
@@ -617,10 +832,26 @@ export function registerTools(
             body.resources = { cpu_units: args.cpu_units, memory_mib: args.memory_mb };
           }
 
+          if (args.dry_run) {
+            const dry = client.dryRun();
+            await dry.client.deploy(body);
+            return dryRunResult(dry.requests, [
+              `Tagged "${AGENT_TAG}" automatically.`,
+              'Auto-stop comes from the version\'s max_duration; a real deploy reports it.',
+            ]);
+          }
+
+          // Edgegap has no per-deployment time limit: a deployment runs until
+          // stopped or until its version's max_duration (default 1440 minutes,
+          // a full day). Read it first so the agent knows how long an
+          // unstopped test server will keep billing.
+          const version = await client.getAppVersion(args.application, args.version);
           const res = await client.deploy(body);
           return ok({
             request_id: res.request_id,
             status: 'starting',
+            tags,
+            ...autoStop(version.max_duration),
             next_step: `Call edgegap_wait_for_deployment with request_id ${res.request_id}.`,
           });
         })
@@ -628,7 +859,7 @@ export function registerTools(
   }
 
   // ---------------------------------------------------------------- 6 ----
-  server.registerTool(
+  tool(
     'edgegap_get_deployment',
     {
       title: 'Get deployment status',
@@ -649,7 +880,7 @@ export function registerTools(
   );
 
   // ---------------------------------------------------------------- 7 ----
-  server.registerTool(
+  tool(
     'edgegap_wait_for_deployment',
     {
       title: 'Wait for a deployment to become ready',
@@ -710,7 +941,7 @@ export function registerTools(
   );
 
   // ---------------------------------------------------------------- 8 ----
-  server.registerTool(
+  tool(
     'edgegap_list_deployments',
     {
       title: 'List running deployments',
@@ -721,8 +952,17 @@ export function registerTools(
         'e.g. [{field:"application",operator:"eq",value:"my-game"},{field:"status",operator:"eq",value:"ready"}]. ' +
         'Operators: eq and neq on every field except created_at (eq, gte, lte); in and nin with an array value ' +
         'on request_id, tags, application, version, fleet_name, host_name; ilike with % wildcards on fleet_name ' +
-        'and host_name. At most one filter per field. Sort by created_at or available_session_sockets.',
+        'and host_name. At most one filter per field. Sort by created_at or available_session_sockets. ' +
+        `To find every deployment an agent started through this server, pass only_agent_deployments: true ` +
+        `(the same as filtering tags in ["${AGENT_TAG}", "mcp"]).`,
       inputSchema: {
+        only_agent_deployments: z
+          .boolean()
+          .optional()
+          .describe(
+            `Only deployments started through this server: tagged "${AGENT_TAG}", or "mcp" by versions ` +
+              'up to 0.3.3. Cannot be combined with a tags filter.'
+          ),
         filters: z
           .array(
             z.object({
@@ -751,8 +991,15 @@ export function registerTools(
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async ({ filters, order_by, limit }) =>
+    async ({ only_agent_deployments, filters: given, order_by, limit }) =>
       guard(auth, async () => {
+        let filters = given;
+        if (only_agent_deployments) {
+          if (given?.some((f) => f.field === 'tags')) {
+            return fail('only_agent_deployments already filters on tags. Drop the tags filter, or drop only_agent_deployments.');
+          }
+          filters = [...(given ?? []), { field: 'tags' as const, operator: 'in' as const, value: [AGENT_TAG, 'mcp'] }];
+        }
         const fields = (filters ?? []).map((f) => f.field);
         const repeated = fields.find((f, i) => fields.indexOf(f) !== i);
         if (repeated) {
@@ -776,21 +1023,30 @@ export function registerTools(
 
   // ---------------------------------------------------------------- 9 ----
   if (mutating) {
-    server.registerTool(
+    tool(
       'edgegap_stop_deployment',
       {
         title: 'Stop a deployment',
         description:
           'Gracefully stop one deployment by request_id, sending SIGTERM to the container. ' +
           'Stop every deployment you started for testing before ending your task. This tool ' +
-          'stops exactly one deployment; bulk stop is deliberately not exposed.',
+          'stops exactly one deployment, named by its exact request_id: empty IDs, wildcards ' +
+          'and lists are refused, and bulk stop is deliberately not exposed.',
         inputSchema: {
-          request_id: z.string().describe('The request_id of the deployment to stop.'),
+          request_id: z.string().describe('The exact request_id of the one deployment to stop, e.g. "61b1be8f54d9".'),
+          dry_run: dryRunParam,
         },
         annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: true },
       },
-      async ({ request_id }) =>
+      async ({ request_id, dry_run }) =>
         guarded(auth, NOT_FOUND.deployment, async () => {
+          const bad = checkRequestId(request_id);
+          if (bad) return bad;
+          if (dry_run) {
+            const dry = client.dryRun();
+            await dry.client.stopDeployment(request_id);
+            return dryRunResult(dry.requests);
+          }
           const res = await client.stopDeployment(request_id);
           return ok({ request_id, result: res.message ?? 'stop requested' });
         })
@@ -798,7 +1054,7 @@ export function registerTools(
   }
 
   // --------------------------------------------------------------- 10 ----
-  server.registerTool(
+  tool(
     'edgegap_get_deployment_logs',
     {
       title: 'Get container logs for a deployment',
@@ -843,7 +1099,7 @@ export function registerTools(
   // -------------------------------------------------------------- 11a ----
   // Pure text generation: no token, no network, so it is always registered and
   // never goes through guard().
-  server.registerTool(
+  tool(
     'edgegap_generate_dockerfile',
     {
       title: 'Generate a game server Dockerfile',
@@ -950,7 +1206,7 @@ export function registerTools(
   // --------------------------------------------------------------- 11 ----
   // Pure text analysis: no token, no network, so it is always registered and
   // never goes through guard().
-  server.registerTool(
+  tool(
     'edgegap_validate_server_config',
     {
       title: 'Validate a game server Dockerfile and port config',
@@ -1029,7 +1285,7 @@ export function registerTools(
   // Mutating-only: it can provision the registry project, and it hands a
   // secret to the agent. A read-only session has no business receiving one.
   if (mutating) {
-    server.registerTool(
+    tool(
       'edgegap_get_registry_credentials',
       {
         title: 'Get Edgegap container registry push credentials',
@@ -1122,7 +1378,7 @@ export function registerTools(
   }
 
   // --------------------------------------------------------------- 13 ----
-  server.registerTool(
+  tool(
     'edgegap_list_registry_tags',
     {
       title: 'List image tags in the Edgegap registry',
@@ -1202,7 +1458,7 @@ export function registerTools(
 
   // --------------------------------------------------------------- 14 ----
   if (mutating) {
-    server.registerTool(
+    tool(
       'edgegap_create_relay_session',
       {
         title: 'Create a relay session (host-client games only)',
@@ -1227,15 +1483,21 @@ export function registerTools(
           webhook_url: z.string().url().optional().describe('Called when the session is ready.'),
           wait_until_ready: z.boolean().optional().describe('Poll until the relay is assigned. Default true.'),
           timeout_seconds: z.number().int().min(5).max(120).optional().describe('Default 30.'),
+          dry_run: dryRunParam,
         },
         annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true },
       },
-      async ({ user_ips, webhook_url, wait_until_ready, timeout_seconds }) =>
+      async ({ user_ips, webhook_url, wait_until_ready, timeout_seconds, dry_run }) =>
         guard(auth, async () => {
-          const created = await client.createRelaySession({
-            users: user_ips.map((ip) => ({ ip })),
-            ...(webhook_url ? { webhook_url } : {}),
-          });
+          const leak = await tokenLeak(auth, dry_run, [['webhook_url', webhook_url]]);
+          if (leak) return leak;
+          const body = { users: user_ips.map((ip) => ({ ip })), ...(webhook_url ? { webhook_url } : {}) };
+          if (dry_run) {
+            const dry = client.dryRun();
+            await dry.client.createRelaySession(body);
+            return dryRunResult(dry.requests);
+          }
+          const created = await client.createRelaySession(body);
 
           if (wait_until_ready === false) {
             return ok({
@@ -1273,7 +1535,7 @@ export function registerTools(
   }
 
   // --------------------------------------------------------------- 15 ----
-  server.registerTool(
+  tool(
     'edgegap_get_relay_session',
     {
       title: 'Get a relay session',
@@ -1290,7 +1552,7 @@ export function registerTools(
 
   if (mutating) {
     // ------------------------------------------------------------- 16 ----
-    server.registerTool(
+    tool(
       'edgegap_authorize_relay_user',
       {
         title: 'Add a player to a relay session',
@@ -1300,11 +1562,17 @@ export function registerTools(
         inputSchema: {
           session_id: z.string(),
           user_ip: z.string().min(3).describe('Public IP of the joining player.'),
+          dry_run: dryRunParam,
         },
         annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true },
       },
-      async ({ session_id, user_ip }) =>
+      async ({ session_id, user_ip, dry_run }) =>
         guarded(auth, NOT_FOUND.relay, async () => {
+          if (dry_run) {
+            const dry = client.dryRun();
+            await dry.client.authorizeRelayUser({ session_id, user_ip });
+            return dryRunResult(dry.requests);
+          }
           const res = await client.authorizeRelayUser({ session_id, user_ip });
           return ok({
             session_id: res.session_id,
@@ -1316,18 +1584,30 @@ export function registerTools(
     );
 
     // ------------------------------------------------------------- 17 ----
-    server.registerTool(
+    tool(
       'edgegap_delete_relay_session',
       {
         title: 'Delete a relay session',
         description:
           'Close one relay session. Connected players lose their relay connection. Delete every ' +
-          'session you created for testing before ending your task.',
-        inputSchema: { session_id: z.string() },
+          'session you created for testing before ending your task. Takes exactly one session_id; ' +
+          'empty IDs, wildcards and lists are refused.',
+        inputSchema: {
+          session_id: z.string().describe('The exact session_id of the one session to delete, e.g. "0724828881e2-S".'),
+          dry_run: dryRunParam,
+        },
         annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: true },
       },
-      async ({ session_id }) =>
+      async ({ session_id, dry_run }) =>
         guarded(auth, NOT_FOUND.relay, async () => {
+          if (!SESSION_ID.test(session_id)) {
+            return fail(`"${session_id.slice(0, 80)}" is not a single relay session_id. Pass exactly one, e.g. "0724828881e2-S".`);
+          }
+          if (dry_run) {
+            const dry = client.dryRun();
+            await dry.client.deleteRelaySession(session_id);
+            return dryRunResult(dry.requests);
+          }
           await client.deleteRelaySession(session_id);
           return ok({ session_id, result: 'deleted' });
         })
@@ -1340,7 +1620,7 @@ export function registerTools(
   // Edgegap has no public API to create a matchmaker, so this does not create
   // one. It produces the configuration the dashboard asks for, checked against
   // the application version it points at.
-  server.registerTool(
+  tool(
     'edgegap_build_matchmaker_config',
     {
       title: 'Build a basic matchmaker configuration',

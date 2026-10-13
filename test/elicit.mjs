@@ -33,19 +33,19 @@ await c.close();
 c = await connect(async () => ({ action: 'accept', content: { api_token: 'abc', acknowledged: false } }));
 r = await c.callTool({ name: 'edgegap_list_apps', arguments: {} });
 console.log('\n2. NOT ACKNOWLEDGED — blocked:', r.isError === true);
-console.log('   ' + r.content[0].text.replace(/\s+/g, ' ').slice(0, 130));
+console.log('   ' + r.content.at(-1).text.replace(/\s+/g, ' ').slice(0, 130));
 await c.close();
 
 // 3. Developer declines outright.
 c = await connect(async () => ({ action: 'decline' }));
 r = await c.callTool({ name: 'edgegap_list_apps', arguments: {} });
 console.log('\n3. DECLINED — blocked:', r.isError === true);
-console.log('   ' + r.content[0].text.replace(/\s+/g, ' ').slice(0, 130));
+console.log('   ' + r.content.at(-1).text.replace(/\s+/g, ' ').slice(0, 130));
 await c.close();
 
 // 4. Client that cannot prompt at all.
 c = await connect(null, {});
 r = await c.callTool({ name: 'edgegap_list_apps', arguments: {} });
 console.log('\n4. NO ELICITATION SUPPORT — falls back to env var instructions:', r.isError === true);
-console.log('   ' + r.content[0].text.replace(/\s+/g, ' ').slice(0, 130));
+console.log('   ' + r.content.at(-1).text.replace(/\s+/g, ' ').slice(0, 130));
 await c.close();

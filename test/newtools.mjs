@@ -28,7 +28,7 @@ const mock = http.createServer((req, res) => {
   let body = '';
   req.on('data', (c) => (body += c));
   req.on('end', () => {
-    calls.push({ method: req.method, url: req.url, body: body ? JSON.parse(body) : undefined, auth: req.headers.authorization });
+    calls.push({ method: req.method, url: req.url, body: body ? JSON.parse(body) : undefined, auth: req.headers.authorization, ua: req.headers['user-agent'] });
     const send = (status, data) => {
       res.writeHead(status, { 'Content-Type': 'application/json' });
       res.end(data === undefined ? '' : JSON.stringify(data));
@@ -89,6 +89,20 @@ const mock = http.createServer((req, res) => {
         return send(404, { message: 'Deployment not found' });
       case 'GET /v1/deployment/gone-deployment/container-logs':
         return send(404, { message: 'Deployment not found' });
+      // Guardrail routes. max_duration: 60 (capped), 1440 (the API default,
+      // a full day), -1 (no auto-stop).
+      case 'GET /v1/app/my-game/version/build-42':
+        return send(200, { name: 'build-42', max_duration: 60 });
+      case 'GET /v1/app/my-game/version/long-1':
+        return send(200, { name: 'long-1', max_duration: 1440 });
+      case 'GET /v1/app/my-game/version/forever':
+        return send(200, { name: 'forever', max_duration: -1 });
+      case 'POST /v2/deployments':
+        return send(200, { request_id: '7e709a0d8efd' });
+      case 'DELETE /v1/stop/7e709a0d8efd':
+        return send(200, { message: 'Deployment stop requested' });
+      case 'POST /v1/app':
+        return send(200, { name: JSON.parse(body).name, is_active: true });
       case 'GET /v1/app/ghost-game/versions':
         return send(404, { message: 'App not found' });
       case 'GET /v1/deployments':
@@ -112,7 +126,9 @@ async function connect(extraEnv = {}) {
   return c;
 }
 const text = (r) => r.content.map((x) => x.text).join('\n');
-const json = (r) => JSON.parse(r.content[0].text);
+// Every result starts with a "[api host]" line; the payload follows it.
+const isHostLine = (x, i) => i === 0 && /^\[[^\]]+\]$/.test(x.text);
+const json = (r) => JSON.parse(r.content.filter((x, i) => !isHostLine(x, i))[0].text);
 
 const c = await connect();
 
@@ -420,6 +436,149 @@ check('create_app_version respects EDGEGAP_APP_ALLOWLIST', res.isError && /ALLOW
 res = await al.callTool({ name: 'edgegap_list_app_versions', arguments: { application: 'my-game' } });
 check('reads are not blocked by the allowlist (list_app_versions)', !res.isError && json(res).versions?.length === 3, text(res).slice(0, 120));
 await al.close();
+
+// ================================================================ guardrails ====
+// A UUID-shaped token, so the leak check (which ignores very short tokens) is live.
+const REAL = '0f8b3c1e-e458-4592-b607-c2c28afd8b62';
+const gc = await connect({ EDGEGAP_API_TOKEN: REAL });
+const call = async (name, args) => gc.callTool({ name, arguments: args });
+const sentCalls = () => calls.filter((x) => x.method !== 'GET' || /\/(stop|deployments)/.test(x.url));
+const dep = { application: 'my-game', version: 'build-42', users: { ip_addresses: ['203.0.113.1'] } };
+
+// ----------------------------------------------------------- 1. dry run ----
+console.log('\n1. dry_run on every write tool');
+const dryCases = [
+  ['edgegap_deploy', dep, 'POST', '/v2/deployments'],
+  ['edgegap_stop_deployment', { request_id: '7e709a0d8efd' }, 'DELETE', '/v1/stop/7e709a0d8efd'],
+  ['edgegap_create_app', { name: 'my-game' }, 'POST', '/v1/app'],
+  ['edgegap_create_app_version', { ...ver, ports: [{ port: 7777, protocol: 'UDP' }] }, 'POST', '/v1/app/my-game/version'],
+  ['edgegap_create_relay_session', { user_ips: ['203.0.113.1'] }, 'POST', '/v1/relays/sessions'],
+  ['edgegap_authorize_relay_user', { session_id: 'abc123-S', user_ip: '203.0.113.2' }, 'POST', '/v1/relays/sessions:authorize-user'],
+  ['edgegap_delete_relay_session', { session_id: 'abc123-S' }, 'DELETE', '/v1/relays/sessions/abc123-S'],
+];
+for (const [name, args, method, path] of dryCases) {
+  calls.length = 0;
+  const out = await call(name, { ...args, dry_run: true });
+  const dd = json(out);
+  const req = dd.requests?.[0];
+  check(`${name}: sends nothing`, calls.length === 0 && dd.sent === false, `${calls.length} calls`);
+  check(`${name}: shows method, host and path`, req?.method === method && req.path === path && req.host === new URL(base).host, JSON.stringify(req));
+  check(`${name}: token masked`, req?.headers?.Authorization === 'token ***' && !text(out).includes(REAL));
+}
+let dr = json(await call('edgegap_create_app_version', {
+  ...ver, ports: [{ port: 7777, protocol: 'UDP' }], registry_username: 'robot', registry_token: 'reg-secret-xyz',
+  env: [{ key: 'GAME_MODE', value: 'secret-env-value' }], dry_run: true,
+}));
+let shown = JSON.stringify(dr);
+check('dry run masks the registry token and env values', !shown.includes('reg-secret-xyz') && !shown.includes('secret-env-value') && dr.requests[0].body.envs[0].value === '***');
+check('dry run keeps env names visible', dr.requests[0].body.envs[0].key === 'GAME_MODE');
+dr = json(await call('edgegap_deploy', { ...dep, tags: ['ci'], dry_run: true }));
+check('dry run shows the forced tag in the body', JSON.stringify(dr.requests[0].body.tags) === JSON.stringify(['ci', 'edgegap-mcp']));
+
+// ---------------------------------------------------- 2. token in container ----
+console.log('\n2. token never goes into a container');
+const leakCases = [
+  ['deploy: env value', 'edgegap_deploy', { ...dep, env: [{ key: 'EDGEGAP_TOKEN', value: REAL }] }],
+  ['deploy: env value with "token " prefix', 'edgegap_deploy', { ...dep, env: [{ key: 'X', value: `token ${REAL}` }] }],
+  ['deploy: env name', 'edgegap_deploy', { ...dep, env: [{ key: `K_${REAL.replace(/-/g, '')}`, value: 'x' }] }],
+  ['deploy: tag', 'edgegap_deploy', { ...dep, tags: [REAL] }],
+  ['deploy: dry run too', 'edgegap_deploy', { ...dep, env: [{ key: 'T', value: REAL }], dry_run: true }],
+  ['create_app_version: env value', 'edgegap_create_app_version', { ...ver, ports: [{ port: 7777, protocol: 'UDP' }], env: [{ key: 'T', value: REAL }] }],
+  ['create_relay_session: webhook URL', 'edgegap_create_relay_session', { user_ips: ['203.0.113.1'], webhook_url: `https://hooks.example.com/?t=${REAL}` }],
+];
+for (const [label, name, args] of leakCases) {
+  calls.length = 0;
+  const out = await call(name, args);
+  check(`${label}: refused, nothing sent, token not echoed`, out.isError && /Refused/.test(text(out)) && calls.length === 0 && !text(out).includes(REAL), text(out).slice(0, 120));
+}
+
+// ------------------------------------------------------- 3. forced tag ----
+console.log('\n3. forced agent tag');
+calls.length = 0;
+await call('edgegap_deploy', { ...dep, tags: ['playtest'] });
+check('caller tags kept, edgegap-mcp added', JSON.stringify(calls.find((x) => x.method === 'POST')?.body?.tags) === JSON.stringify(['playtest', 'edgegap-mcp']));
+calls.length = 0;
+await call('edgegap_deploy', dep);
+check('no caller tags: edgegap-mcp alone (no more bare "mcp")', JSON.stringify(calls.find((x) => x.method === 'POST')?.body?.tags) === JSON.stringify(['edgegap-mcp']));
+calls.length = 0;
+await call('edgegap_deploy', { ...dep, tags: ['edgegap-mcp'] });
+check('not duplicated when the caller passes it too', calls.find((x) => x.method === 'POST')?.body?.tags.length === 1);
+calls.length = 0;
+await call('edgegap_list_deployments', { only_agent_deployments: true });
+const q = JSON.parse(new URL(calls[0].url, 'http://x').searchParams.get('query') ?? '{}');
+check('only_agent_deployments filters tags in [edgegap-mcp, mcp]', JSON.stringify(q.filters) === JSON.stringify([{ field: 'tags', operator: 'in', value: ['edgegap-mcp', 'mcp'] }]), JSON.stringify(q));
+res = await call('edgegap_list_deployments', { only_agent_deployments: true, filters: [{ field: 'tags', operator: 'eq', value: 'x' }] });
+check('only_agent_deployments with a tags filter is refused', res.isError === true);
+
+// -------------------------------------------------------- 4. auto-stop ----
+console.log('\n4. auto-stop reported on every deploy');
+r = json(await call('edgegap_deploy', dep));
+check('60-minute version: reported, no warning', r.auto_stop_after_minutes === 60 && r.warning === undefined && r.request_id === '7e709a0d8efd');
+r = json(await call('edgegap_deploy', { ...dep, version: 'long-1' }));
+check('1440-minute version (the API default): warned', r.auto_stop_after_minutes === 1440 && /24 hours/.test(r.warning ?? ''));
+r = json(await call('edgegap_deploy', { ...dep, version: 'forever' }));
+check('no max_duration: warned it bills until stopped', r.auto_stop === 'none' && /until it is stopped/.test(r.warning ?? ''));
+
+// ------------------------------------------------------ 5. strict stop ----
+console.log('\n5. strict stop');
+for (const bad of ['', '*', '7e709a0d8efd,abcdef123456', '7e709a0d8efd abcdef123456', '["7e709a0d8efd"]', '7e709a0d8e*', 'all']) {
+  calls.length = 0;
+  res = await call('edgegap_stop_deployment', { request_id: bad });
+  check(`stop "${bad}" refused, nothing sent`, res.isError && calls.length === 0 && /single request_id/.test(text(res)));
+}
+calls.length = 0;
+res = await call('edgegap_stop_deployment', { request_id: '7e709a0d8efd' });
+check('stop with one exact request_id goes through', !res.isError && calls.some((x) => x.method === 'DELETE' && x.url === '/v1/stop/7e709a0d8efd'));
+for (const bad of ['*', 'abc123-S,def456-S', '']) {
+  calls.length = 0;
+  res = await call('edgegap_delete_relay_session', { session_id: bad });
+  check(`relay delete "${bad}" refused`, res.isError && calls.length === 0);
+}
+
+// -------------------------------------------------------- 6. host label ----
+console.log('\n6. host on every result');
+const custom = `[custom · ${new URL(base).host}]`;
+res = await call('edgegap_list_apps', {});
+check('API results start with the host line', res.content[0].text === custom, res.content[0].text);
+res = await call('edgegap_generate_dockerfile', { engine: 'unity' });
+check('local-only tools carry it too', res.content[0].text === custom);
+res = await call('edgegap_stop_deployment', { request_id: '*' });
+check('errors carry it too', res.isError && res.content[0].text === custom);
+
+// --------------------------------------------------------- 7. context ----
+console.log('\n7. edgegap_context');
+calls.length = 0;
+r = json(await call('edgegap_context', {}));
+check('no API call', calls.length === 0);
+check('reports version, transport and host', /^@edgegap\/mcp \d+\.\d+\.\d+$/.test(r.server) && r.transport === 'local (stdio)' && r.api_host === custom.slice(1, -1));
+check('reports guardrails', r.forced_deploy_tag === 'edgegap-mcp' && r.read_only === false && r.max_duration_ceiling_minutes === 60 && /deploy/.test(r.guardrails?.dry_run ?? ''));
+check('token source shown, never the token', r.token === 'from EDGEGAP_API_TOKEN' && !JSON.stringify(r).includes(REAL));
+
+// ------------------------------------------------------ 19. User-Agent ----
+console.log('\n19. User-Agent');
+calls.length = 0;
+await call('edgegap_list_apps', {});
+check('User-Agent is edgegap-mcp/<version> (<client>)', /^edgegap-mcp\/\d+\.\d+\.\d+ \(newtools\)$/.test(calls[0]?.ua ?? ''), calls[0]?.ua);
+await gc.close();
+
+// The token goes wherever EDGEGAP_BASE_URL points, so a URL naming Edgegap's
+// host must be exactly https://api.edgegap.com; the server refuses to start.
+const { spawnSync } = await import('node:child_process');
+for (const [bad, why] of [
+  ['http://api.edgegap.com', 'plain http'],
+  ['https://api.edgegap.com:8443', 'wrong port'],
+  ['https://user:pw@api.edgegap.com', 'credentials in the URL'],
+  ['not a url', 'not a URL'],
+]) {
+  const p = spawnSync('node', ['dist/index.js'], { env: { PATH: process.env.PATH, EDGEGAP_API_TOKEN: REAL, EDGEGAP_BASE_URL: bad }, input: '', timeout: 15000, encoding: 'utf8' });
+  check(`EDGEGAP_BASE_URL ${why}: server refuses to start`, p.status === 1 && /EDGEGAP_BASE_URL/.test(p.stderr) && !p.stderr.includes(REAL), p.stderr.slice(0, 120));
+}
+
+// read-only mode lists the context tool and no dry-run write tools
+const ro2 = await connect({ EDGEGAP_READ_ONLY: '1' });
+r = json(await ro2.callTool({ name: 'edgegap_context', arguments: {} }));
+check('context in read-only mode says so', r.read_only === true && /read-only/.test(r.guardrails.dry_run));
+await ro2.close();
 
 // ------------------------------------------------- token prefix in env ----
 const dbl = await connect({ EDGEGAP_API_TOKEN: 'token token fake-api-token' });

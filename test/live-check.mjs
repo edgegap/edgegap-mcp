@@ -35,7 +35,7 @@ const creds = await call('registry credentials (wizard endpoint, init-quick-star
   'edgegap_get_registry_credentials', { image_name: 'mcp-live-check', tag: 'check-1' });
 let project;
 if (!creds.r.isError) {
-  const data = JSON.parse(creds.r.content[0].text);
+  const data = JSON.parse(creds.r.content.at(-1).text);
   registryToken = data.token;
   project = data.project;
 }

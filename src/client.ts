@@ -8,6 +8,46 @@
 
 import { Config, redact } from './config.js';
 import { TokenSource } from './auth.js';
+import { VERSION } from './version.js';
+
+/** A request a dry run would have sent, with every secret masked. */
+export interface PlannedRequest {
+  method: Method;
+  host: string;
+  path: string;
+  headers: Record<string, string>;
+  body?: unknown;
+}
+
+export interface ClientOptions {
+  /** The connected MCP client's name, for the User-Agent. Read per request,
+   *  since the client only announces it during the handshake. */
+  clientName?: () => string | undefined;
+  /** Set on a dry-run client: requests are recorded here and never sent. */
+  recorder?: (request: PlannedRequest) => void;
+}
+
+const SECRET_KEYS = /^(private_token|registry_token|token|password|secret|api_key)$/i;
+
+/**
+ * Deep copy of a request body with secrets masked: registry tokens and the
+ * like by key name, every environment variable value (we never echo those),
+ * and the API token anywhere it appears.
+ */
+export function maskSecrets(value: unknown, apiToken?: string): unknown {
+  if (typeof value === 'string') {
+    return apiToken && value.includes(apiToken) ? value.split(apiToken).join('***') : value;
+  }
+  if (Array.isArray(value)) return value.map((v) => maskSecrets(v, apiToken));
+  if (!value || typeof value !== 'object') return value;
+  const obj = value as Record<string, unknown>;
+  const isEnvVar = typeof obj.key === 'string' && 'value' in obj;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    out[k] = (SECRET_KEYS.test(k) && v != null) || (isEnvVar && k === 'value') ? '***' : maskSecrets(v, apiToken);
+  }
+  return out;
+}
 
 export class EdgegapApiError extends Error {
   constructor(
@@ -25,8 +65,29 @@ type Method = 'GET' | 'POST' | 'PATCH' | 'DELETE';
 export class EdgegapClient {
   constructor(
     private readonly config: Config,
-    private readonly auth: TokenSource
+    private readonly auth: TokenSource,
+    private readonly options: ClientOptions = {}
   ) {}
+
+  /**
+   * A client that records requests instead of sending them, for dry runs.
+   * Tools call it exactly as they call the real one, so the request shown is
+   * the request that would be sent — not a second copy of the path logic.
+   */
+  dryRun(): { client: EdgegapClient; requests: PlannedRequest[] } {
+    const requests: PlannedRequest[] = [];
+    const client = new EdgegapClient(this.config, this.auth, {
+      ...this.options,
+      recorder: (r) => requests.push(r),
+    });
+    return { client, requests };
+  }
+
+  /** "edgegap-mcp/<version> (<client>)". Nothing else identifying is sent. */
+  private userAgent(): string {
+    const client = this.options.clientName?.();
+    return `edgegap-mcp/${VERSION}${client ? ` (${client.replace(/[^\w .\-/]/g, '')})` : ''}`;
+  }
 
   private async request<T>(
     method: Method,
@@ -41,6 +102,19 @@ export class EdgegapClient {
       if (value !== undefined && value !== null) {
         url.searchParams.set(key, String(value));
       }
+    }
+
+    if (this.options.recorder) {
+      // Dry run: record and stop. Never ask for or read the token here — the
+      // header is shown masked, and a dry run must not trigger the prompt.
+      this.options.recorder({
+        method,
+        host: url.host,
+        path: url.pathname + url.search,
+        headers: { Authorization: 'token ***', 'Content-Type': 'application/json', 'User-Agent': this.userAgent() },
+        ...(options.body === undefined ? {} : { body: maskSecrets(options.body, this.auth.current) }),
+      });
+      return {} as T;
     }
 
     // Resolved per request rather than at construction: the developer may not
@@ -59,7 +133,7 @@ export class EdgegapClient {
           Authorization: `token ${token}`,
           'Content-Type': 'application/json',
           Accept: 'application/json',
-          'User-Agent': 'edgegap-mcp',
+          'User-Agent': this.userAgent(),
         },
         body: options.body === undefined ? undefined : JSON.stringify(options.body),
         signal: controller.signal,
@@ -118,6 +192,15 @@ export class EdgegapClient {
       'GET',
       'v1',
       `/v1/app/${encodeURIComponent(appName)}/versions`
+    );
+  }
+
+  /** One version. The response is the version itself, not wrapped. */
+  getAppVersion(appName: string, versionName: string) {
+    return this.request<AppVersionRecord>(
+      'GET',
+      'v1',
+      `/v1/app/${encodeURIComponent(appName)}/version/${encodeURIComponent(versionName)}`
     );
   }
 
