@@ -5,6 +5,12 @@
   "compatibility_date": "2026-09-01",
   "compatibility_flags": ["nodejs_compat"],
 
+  // posthog-node optionally imports @opentelemetry/api for trace ids. No
+  // OpenTelemetry runs here, so resolve it to a stub with no active span.
+  "alias": {
+    "@opentelemetry/api": "./otel-api-stub.ts"
+  },
+
   // No KV, D1, R2, or Durable Object bindings — on purpose.
   // The stateless handler needs none, and adding storage here is how a
   // relay quietly becomes a credential vault. See worker.ts.
@@ -27,7 +33,9 @@
 
   // Do not enable request body logging. Tool arguments and headers on this
   // Worker carry customer API tokens.
-  // Product analytics (PostHog): off until the POSTHOG_API_KEY secret is set.
+  // PostHog MCP Analytics (@posthog/mcp): off until POSTHOG_API_KEY is set.
+  // POSTHOG_AGENT_FIELDS "1" turns on intent capture, which adds context,
+  // conversation_id and llm_model parameters to every tool (off by default).
   //   npx wrangler secret put POSTHOG_API_KEY --config worker/wrangler.jsonc
   //   npx wrangler secret put TELEMETRY_SALT --config worker/wrangler.jsonc
   // TELEMETRY_SALT (any long random string) hashes tokens into stable,
