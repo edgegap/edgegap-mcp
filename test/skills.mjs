@@ -83,6 +83,16 @@ check('markdown resources are typed text/markdown', skillRes.find((x) => x.uri =
 const ctx = JSON.parse(body(await c.callTool({ name: 'edgegap_context', arguments: {} })));
 check('edgegap_context reports the skills pack', ctx.skills_pack?.startsWith(SKILLS_PACK.version));
 check('server instructions point at the skills', /edgegap_get_skill/.test(c.getInstructions() ?? ''));
+// Agents get the instructions on connect, and clients truncate long ones: the
+// skills must be the first thing they read, and every link must resolve.
+const instructions = c.getInstructions() ?? '';
+check('instructions open with the skills line', instructions.startsWith('Before acting, read edgegap-skill://edgegap/SKILL.md'), instructions.slice(0, 80));
+const linked = [...new Set(instructions.match(/edgegap-skill:\/\/[^\s),]+/g) ?? [])];
+check('instructions link the core, Unity and Unreal skills', ['edgegap', 'edgegap-unity', 'edgegap-unreal'].every((s) => linked.includes(`edgegap-skill://${s}/SKILL.md`)), linked.join(' '));
+for (const uri of linked) {
+  const got = await c.readResource({ uri }).catch(() => undefined);
+  check(`linked resource ${uri} resolves`, Boolean(got?.contents?.[0]?.text?.includes('name: ')));
+}
 await c.close();
 
 console.log('\nread-only mode');

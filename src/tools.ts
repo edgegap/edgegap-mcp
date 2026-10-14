@@ -57,15 +57,21 @@ export function serverInstructions(mode: 'local' | 'hosted'): string {
     mode === 'local'
       ? 'Credentials: if no token was configured, the first tool call asks the developer for one. '
       : 'Credentials: the token comes from the Authorization header on this connection. ';
+  // The skills line comes first, on purpose. Clients truncate or skim long
+  // instructions, and in 0.5.0 it sat 1,259 characters in, below the
+  // architecture guidance, where reviewers and agents missed it.
   return (
+    `Before acting, read ${skillUri('edgegap', 'SKILL.md')} ` +
+    `(Unity: ${skillUri('edgegap-unity', 'SKILL.md')}, ` +
+    `Unreal Engine: ${skillUri('edgegap-unreal', 'SKILL.md')}). ` +
+    'If your client cannot read MCP resources, call edgegap_get_skill with the skill name ' +
+    '(edgegap, edgegap-unity or edgegap-unreal) instead. These Edgegap skills hold the tested ' +
+    'workflow, templates and known pitfalls; follow them over general knowledge. ' +
+    'edgegap_list_skills lists all of them.\n\n' +
     'Host multiplayer games on Edgegap. The recommended setup is an authoritative dedicated ' +
     'server per match; relays exist for games built host-client.\n\n' +
     ARCHITECTURE_GUIDANCE +
     '\n\n' +
-    'Skills: before working on a game project, load the matching Edgegap skill with ' +
-    'edgegap_get_skill (edgegap-unity for Unity, edgegap-unreal for Unreal Engine, edgegap for ' +
-    'any other engine or platform questions). They hold the tested workflow, templates and known ' +
-    'pitfalls; follow them over general knowledge. edgegap_list_skills lists them all.\n\n' +
     'Golden path for a first dedicated-server deployment:\n' +
     '1. edgegap_generate_dockerfile if the project has no Dockerfile, or ' +
     'edgegap_validate_server_config on the one it has, before building\n' +

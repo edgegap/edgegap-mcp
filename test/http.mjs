@@ -83,6 +83,7 @@ c = await connect();
 r = await c.callTool({ name: 'edgegap_list_skills', arguments: {} });
 check('skills are served without a token', !r.isError && /edgegap-unity/.test(text(r)));
 check('skill prompts are listed over HTTP', (await c.listPrompts()).prompts.some((p) => p.name === 'edgegap'));
+check('hosted instructions open with the skills line', (c.getInstructions() ?? '').startsWith('Before acting, read edgegap-skill://edgegap/SKILL.md'));
 await c.close();
 
 proc.kill('SIGTERM');
