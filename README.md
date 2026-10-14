@@ -157,7 +157,7 @@ To keep your API token on your own machine, run the server locally instead. Leav
 }
 ```
 
-Needs Node 18+. Pin a version in production (`@edgegap/mcp@0.4.0`) rather than floating on latest. Registered in the official MCP registry as `dev.edgegap/mcp`.
+Needs Node 18+. Pin a version in production (`@edgegap/mcp@0.5.0`) rather than floating on latest. Registered in the official MCP registry as `dev.edgegap/mcp`.
 
 The local server can also limit what an agent can do. These variables have no effect on the hosted endpoint at `mcp.edgegap.dev`:
 
@@ -168,6 +168,30 @@ The local server can also limit what an agent can do. These variables have no ef
 | `EDGEGAP_APP_ALLOWLIST` | *(empty)* | Comma-separated application names. Limits what the agent can create and deploy into. Reading (listing apps and versions) is not limited, and neither is touching deployments once running. See [DESIGN.md](DESIGN.md#scope-of-the-allowlist). |
 | `EDGEGAP_MAX_DURATION_MINUTES` | `60` | Ceiling on `max_duration` the agent may set on a version. |
 | `EDGEGAP_TIMEOUT_MS` | `30000` | Per-request HTTP timeout. |
+
+## 📚 Skills
+
+The server includes the [Edgegap agent skills](https://github.com/edgegap/edgegap-agent-skills): tested, step-by-step workflows for getting a multiplayer game online, with templates (Dockerfiles, matchmaker configs, Unity C# and Unreal C++ drop-ins) and known pitfalls. Any agent connected to Edgegap MCP gets them, with no separate install and no token needed, and is told to load the matching skill before working on a game project.
+
+| Skill | For |
+| --- | --- |
+| `edgegap` | Start here for any engine other than Unity or Unreal Engine, or platform questions. Routes to the rest. |
+| `edgegap-unity` | Unity end to end: server build, matchmaker, client, end-to-end test. |
+| `edgegap-unreal` | Unreal Engine end to end: source engine, Linux server, matchmaker, end-to-end test. |
+| `edgegap-server-design` | Authoritative server design and the deployment lifecycle. |
+| `edgegap-containerize` | The container contract, Dockerfiles, registries, app versions. |
+| `edgegap-local-testing` | Parity tests on your machine, then one smoke-test deployment. |
+| `edgegap-troubleshoot` | Pull errors, crash loops, out-of-memory, clients that can't connect. |
+| `edgegap-deployments-api` | Backend code that deploys servers: webhooks, cleanup, Nakama, PlayFab, UGS, EOS. |
+| `edgegap-launch` | Launch checklist, rollouts, caching, cost control. |
+
+They're served three ways, so every MCP client can reach them:
+
+- **Tools:** `edgegap_list_skills` and `edgegap_get_skill`, which loads a skill's `SKILL.md`, or one of its reference documents or templates with `file`.
+- **Prompts:** one per skill, named after it. In Claude Code they show up as slash commands, e.g. `/mcp__edgegap__edgegap-unity`.
+- **Resources:** one per file, at `edgegap-skill://<skill>/<path>`, e.g. `edgegap-skill://edgegap-unity/references/deploy.md`.
+
+Each release bundles the skills at the commit pinned in `scripts/skills-pin.txt`; `edgegap_context` reports which pack is loaded. If you also installed the skills locally (the Claude Code plugin or `npx skills add`), they're the same pack.
 
 ## 🧰 Tools
 
@@ -304,8 +328,17 @@ npm test                  # mock-API tests; none reach Edgegap
 npm run typecheck:worker
 ```
 
+To update the bundled skills to the latest commit of [edgegap-agent-skills](https://github.com/edgegap/edgegap-agent-skills), then release as usual:
+
+```bash
+npm run sync-skills -- --ref main
+npm run check-skills      # exit 1 if src/skills.generated.ts differs from the pin
+```
+
 | Test | Covers |
 | --- | --- |
+| `test/package.mjs` | Packaging: one `bin`, runtime dependencies, versions in step |
+| `test/skills.mjs` | Skills over MCP: tools, prompts, resources, path safety, bundle matches the pin |
 | `test/smoke.mjs` | Handshake, tool registration, read-only mode |
 | `test/guards.mjs` | Local validation and allowlist enforcement |
 | `test/elicit.mjs` | Token prompt: accept, refuse acknowledgement, decline, no support |

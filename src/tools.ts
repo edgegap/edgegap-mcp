@@ -21,6 +21,7 @@ import {
 } from './serverconfig.js';
 import { generateDockerfile, DockerfileInputError } from './dockerfile.js';
 import { buildMatchmakerConfig, DASHBOARD_URL } from './matchmaker.js';
+import { SKILLS_PACK, findSkill, findSkillFile, fileIndex, mimeType, skillUri } from './skills.js';
 
 /**
  * The one definition of "dedicated server vs relay" this server gives agents.
@@ -61,6 +62,10 @@ export function serverInstructions(mode: 'local' | 'hosted'): string {
     'server per match; relays exist for games built host-client.\n\n' +
     ARCHITECTURE_GUIDANCE +
     '\n\n' +
+    'Skills: before working on a game project, load the matching Edgegap skill with ' +
+    'edgegap_get_skill (edgegap-unity for Unity, edgegap-unreal for Unreal Engine, edgegap for ' +
+    'any other engine or platform questions). They hold the tested workflow, templates and known ' +
+    'pitfalls; follow them over general knowledge. edgegap_list_skills lists them all.\n\n' +
     'Golden path for a first dedicated-server deployment:\n' +
     '1. edgegap_generate_dockerfile if the project has no Dockerfile, or ' +
     'edgegap_validate_server_config on the one it has, before building\n' +
@@ -452,6 +457,7 @@ export function registerTools(
         read_only: config.readOnly,
         app_allowlist: config.appAllowlist.length ? config.appAllowlist : 'none (all applications)',
         max_duration_ceiling_minutes: config.maxDurationCeiling,
+        skills_pack: `${SKILLS_PACK.version} (${SKILLS_PACK.commit.slice(0, 7)}), ${SKILLS_PACK.skills.length} skills`,
         forced_deploy_tag: AGENT_TAG,
         guardrails: {
           dry_run: mutating
@@ -1721,6 +1727,138 @@ export function registerTools(
         });
       })
   );
+
+  registerSkills(server, tool);
+}
+
+// ==================================================================== skills ====
+
+/**
+ * Serves the bundled Edgegap agent skills three ways, because MCP clients
+ * differ in what they surface:
+ *   - tools (edgegap_list_skills, edgegap_get_skill): every agent can call these;
+ *   - prompts, one per skill: slash commands in clients that show prompts;
+ *   - resources, one per file: for clients that browse or @-mention resources.
+ * All three read the same bundle (src/skills.generated.ts). No token, no network.
+ */
+function registerSkills(server: McpServer, tool: McpServer['registerTool']): void {
+  const names = SKILLS_PACK.skills.map((s) => s.name) as [string, ...string[]];
+  const pack = `${SKILLS_PACK.version} (${SKILLS_PACK.commit.slice(0, 7)})`;
+  const howToFetch = (skill: string) =>
+    `Fetch any of these with edgegap_get_skill {skill: "${skill}", file: "<path>"}, or read the ` +
+    `resource ${skillUri(skill, '<path>')}. Template files are meant to be copied into the project ` +
+    'where the skill says.';
+
+  tool(
+    'edgegap_list_skills',
+    {
+      title: 'List the Edgegap agent skills',
+      description:
+        'List the Edgegap agent skills: tested, step-by-step workflows for getting a multiplayer ' +
+        'game online on Edgegap, with templates (Dockerfiles, matchmaker configs, Unity C# and ' +
+        'Unreal C++ drop-ins) and known pitfalls. Before working on a game project, load the ' +
+        'matching skill with edgegap_get_skill: edgegap-unity for Unity, edgegap-unreal for Unreal ' +
+        'Engine, edgegap for any other engine or platform questions; it routes to the rest. No ' +
+        'API call.',
+      inputSchema: {},
+      annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    async () =>
+      ok({
+        pack,
+        source: SKILLS_PACK.source,
+        skills: SKILLS_PACK.skills.map((s) => ({
+          name: s.name,
+          version: s.version,
+          description: s.description,
+          files: s.files.length,
+        })),
+        next_step: 'Load the skill that matches the project with edgegap_get_skill, then follow it.',
+      })
+  );
+
+  tool(
+    'edgegap_get_skill',
+    {
+      title: 'Load an Edgegap agent skill',
+      description:
+        'Load one Edgegap agent skill: its SKILL.md (the workflow to follow) by default, or one of ' +
+        'its reference documents or templates with file. Load the matching skill before acting on ' +
+        'a game project — edgegap-unity for Unity, edgegap-unreal for Unreal Engine, edgegap ' +
+        'otherwise — and fetch the references and templates it points to as you reach them. No API call.',
+      inputSchema: {
+        skill: z.enum(names).describe('Skill name, from edgegap_list_skills.'),
+        file: z
+          .string()
+          .optional()
+          .describe('A file inside the skill, e.g. "references/deploy.md" or "assets/docker/Dockerfile". Default SKILL.md.'),
+      },
+      annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ skill: name, file }) => {
+      const skill = findSkill(name);
+      if (!skill) return fail(`No skill named "${name}". Call edgegap_list_skills.`);
+      const found = findSkillFile(skill, file);
+      if (!found) {
+        return fail(
+          `"${file}" is not a file in the ${skill.name} skill. Its files are:\n` +
+            skill.files.map((f) => `- ${f.path}`).join('\n')
+        );
+      }
+      const header = `${skill.name} ${skill.version} · ${found.path} · pack ${pack}`;
+      const others = found.path === 'SKILL.md' ? fileIndex(skill) : [];
+      const footer = others.length
+        ? `\n\n---\nOther files in this skill:\n${others.map((p) => `- ${p}`).join('\n')}\n\n${howToFetch(skill.name)}`
+        : '';
+      return { content: [{ type: 'text' as const, text: `${header}\n\n${found.content}${footer}` }] };
+    }
+  );
+
+  for (const skill of SKILLS_PACK.skills) {
+    // A prompt per skill: in Claude Code these show up as slash commands.
+    server.registerPrompt(
+      skill.name,
+      {
+        title: `Edgegap skill: ${skill.name}`,
+        description: skill.description,
+      },
+      () => {
+        const main = findSkillFile(skill)!;
+        const others = fileIndex(skill);
+        return {
+          description: skill.description,
+          messages: [
+            {
+              role: 'user' as const,
+              content: {
+                type: 'text' as const,
+                text:
+                  `Follow this Edgegap skill (${skill.name} ${skill.version}, pack ${pack}).\n\n${main.content}` +
+                  (others.length
+                    ? `\n\n---\nOther files in this skill:\n${others.map((p) => `- ${p}`).join('\n')}\n\n${howToFetch(skill.name)}`
+                    : ''),
+              },
+            },
+          ],
+        };
+      }
+    );
+
+    // A resource per file.
+    for (const f of skill.files) {
+      const uri = skillUri(skill.name, f.path);
+      server.registerResource(
+        `${skill.name}/${f.path}`,
+        uri,
+        {
+          title: f.path === 'SKILL.md' ? `${skill.name} skill` : `${skill.name}: ${f.path}`,
+          description: f.path === 'SKILL.md' ? skill.description : undefined,
+          mimeType: mimeType(f.path),
+        },
+        async () => ({ contents: [{ uri, mimeType: mimeType(f.path), text: f.content }] })
+      );
+    }
+  }
 }
 
 /**
