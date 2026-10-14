@@ -194,9 +194,12 @@ rather than relaxing the main one.
 
 These are load-bearing, not stylistic:
 
-- **Do not enable observability or request logging.** Request headers on this
-  Worker carry customer API tokens. `wrangler.jsonc` ships with
-  `observability.enabled: false` for that reason.
+- **Change observability in `wrangler.jsonc`, not the dashboard.** Workers Logs
+  are on (`observability.logs`, with invocation logs and persistence), and
+  `wrangler deploy` overwrites dashboard settings with the file, so a
+  dashboard-only change is undone by the next release. Request headers on this
+  Worker carry customer API tokens: confirm stored logs never contain an
+  `Authorization` value, and turn `invocation_logs` off if they do.
 - **Do not add KV, D1, or a Durable Object to cache tokens.** The moment
   tokens persist, Edgegap becomes the custodian of every customer's unscopeable
   org-wide credential in one internet-reachable place. That is a different

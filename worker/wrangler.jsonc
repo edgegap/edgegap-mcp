@@ -9,9 +9,21 @@
   // The stateless handler needs none, and adding storage here is how a
   // relay quietly becomes a credential vault. See worker.ts.
 
-  // Observability off: request logging on this Worker would capture
-  // Authorization headers carrying customer API tokens.
-  "observability": { "enabled": false },
+  // Workers Logs on, matching the dashboard. This file is the source of
+  // truth: `wrangler deploy` overwrites dashboard settings with it, so a
+  // dashboard-only toggle is undone by the next release.
+  //
+  // Caution: requests on this Worker carry customer Edgegap API tokens in
+  // the Authorization header. Check stored invocation logs never contain
+  // them (search the Logs view for "Authorization"). If they do, set
+  // "invocation_logs": false and keep logs from the Worker's own output only.
+  "observability": {
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true,
+      "persist": true
+    }
+  },
 
   // Do not enable request body logging. Tool arguments and headers on this
   // Worker carry customer API tokens.
