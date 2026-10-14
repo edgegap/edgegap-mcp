@@ -401,6 +401,46 @@ function autoStop(maxDuration: number | undefined): Record<string, unknown> {
   };
 }
 
+/**
+ * The outcome of one tool call, for an optional analytics hook. Built from an
+ * allowlist: never the arguments, the result, or error text.
+ */
+export interface ToolCallEvent {
+  tool: string;
+  success: boolean;
+  /** Edgegap API HTTP status, when the call failed on an API error. */
+  error_status?: number;
+  /** "api" (Edgegap answered with an error), "refused" (a local guardrail), "other". */
+  error_kind?: 'api' | 'refused' | 'other';
+  duration_ms: number;
+  dry_run: boolean;
+  /** For edgegap_get_skill only: which skill was loaded (public content). */
+  skill?: string;
+}
+
+export interface ToolHooks {
+  /** Called after every tool call. Must not throw; errors are swallowed. */
+  onToolCall?: (event: ToolCallEvent) => void;
+}
+
+function toolCallEvent(name: string, input: unknown, result: ToolResult, started: number): ToolCallEvent {
+  const args = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
+  const text = result.content.map((c) => c.text).join('\n');
+  const status = text.match(/Edgegap API (\d{3})\b/)?.[1];
+  const event: ToolCallEvent = {
+    tool: name,
+    success: !result.isError,
+    duration_ms: Date.now() - started,
+    dry_run: args.dry_run === true,
+  };
+  if (result.isError) {
+    event.error_kind = status ? 'api' : /^Refused|is not a single|not in EDGEGAP_APP_ALLOWLIST/m.test(text) ? 'refused' : 'other';
+    if (status) event.error_status = Number(status);
+  }
+  if (name === 'edgegap_get_skill' && typeof args.skill === 'string') event.skill = args.skill.slice(0, 80);
+  return event;
+}
+
 /** Prepends "[api.edgegap.com]" (or "[custom · host]") to a tool result. */
 function withHost(result: ToolResult, label: string): ToolResult {
   return { ...result, content: [{ type: 'text', text: `[${label}]` }, ...result.content] };
@@ -410,16 +450,28 @@ export function registerTools(
   server: McpServer,
   client: EdgegapClient,
   config: Config,
-  auth: TokenSource
+  auth: TokenSource,
+  hooks: ToolHooks = {}
 ): void {
   const mutating = !config.readOnly;
 
   // Every result names the API host it came from, first, so a session pointed
   // at a custom EDGEGAP_BASE_URL can never be mistaken for production.
+  // The optional hook (the hosted Worker's analytics) sees each call's outcome.
   const label = hostLabel(config);
   const tool = ((name: string, def: unknown, cb: (...a: unknown[]) => Promise<ToolResult>) =>
-    server.registerTool(name, def as never, (async (...a: unknown[]) =>
-      withHost(await cb(...a), label)) as never)) as unknown as typeof server.registerTool;
+    server.registerTool(name, def as never, (async (...a: unknown[]) => {
+      const started = Date.now();
+      const result = await cb(...a);
+      if (hooks.onToolCall) {
+        try {
+          hooks.onToolCall(toolCallEvent(name, a[0], result, started));
+        } catch {
+          // Analytics must never affect a tool result.
+        }
+      }
+      return withHost(result, label);
+    }) as never)) as unknown as typeof server.registerTool;
 
   // ---------------------------------------------------------------- 0 ----
   // No token, no network: describes this server's own configuration, so an

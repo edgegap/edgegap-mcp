@@ -27,7 +27,14 @@
 
   // Do not enable request body logging. Tool arguments and headers on this
   // Worker carry customer API tokens.
+  // Product analytics (PostHog): off until the POSTHOG_API_KEY secret is set.
+  //   npx wrangler secret put POSTHOG_API_KEY --config worker/wrangler.jsonc
+  //   npx wrangler secret put TELEMETRY_SALT --config worker/wrangler.jsonc
+  // TELEMETRY_SALT (any long random string) hashes tokens into stable,
+  // non-reversible distinct_ids; without it every event is anonymous.
+  // What is sent, and what never is: worker/telemetry.ts.
   "vars": {
-    "EDGEGAP_MAX_DURATION_MINUTES": "60"
+    "EDGEGAP_MAX_DURATION_MINUTES": "60",
+    "POSTHOG_HOST": "https://us.i.posthog.com"
   }
 }

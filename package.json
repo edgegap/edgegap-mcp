@@ -15,7 +15,8 @@
     "worker:deploy": "wrangler deploy --config worker/wrangler.jsonc",
     "prepublishOnly": "npm run build",
     "sync-skills": "node scripts/sync-skills.mjs",
-    "check-skills": "node scripts/sync-skills.mjs --check"
+    "check-skills": "node scripts/sync-skills.mjs --check",
+    "test:worker": "node test/worker-telemetry.mjs"
   },
   "keywords": [
     "mcp",

@@ -269,7 +269,9 @@ Your API token can do anything in your organization, so the server adds its own 
 | Host on every result | Every result starts with the API host, e.g. `[api.edgegap.com]`, or `[custom · host]` when `EDGEGAP_BASE_URL` points elsewhere. A base URL naming `api.edgegap.com` must be exactly `https://api.edgegap.com`, or the server refuses to start. |
 | Redaction | The token is stripped from every error before it reaches the agent. |
 
-The server identifies itself with `User-Agent: edgegap-mcp/<version> (<MCP client name>)` on every API call, and sends nothing else about you or your machine.
+The server identifies itself with `User-Agent: edgegap-mcp/<version> (<MCP client name>)` on every API call.
+
+**Usage analytics.** The local server and the self-hosted Docker image send nothing beyond the API calls themselves. The hosted endpoint at `mcp.edgegap.dev` sends usage events to Edgegap's PostHog: which MCP client connected, which tool, prompt or skill resource was used, whether a call succeeded (with the API status code if not), how long it took, and whether it was a dry run, plus the server version and Cloudflare's country code. It never sends your token, tool arguments (IP addresses, env vars, app or image names), results or error text, and GeoIP is off. Events from one token are grouped under a keyed, non-reversible hash of it. To opt out, send the header `X-Edgegap-Telemetry: off` (or `DNT: 1`), or use the local server.
 
 ## 🚨 Troubleshooting
 
