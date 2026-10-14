@@ -1,60 +1,111 @@
 /**
- * PostHog product analytics for the hosted endpoint (mcp.edgegap.dev) only.
+ * PostHog MCP Analytics for the hosted endpoint (mcp.edgegap.dev) only, using
+ * PostHog's official MCP SDK (@posthog/mcp) on top of posthog-node.
  *
  * The local server (npx @edgegap/mcp) and the self-hosted Docker image never
  * load this file: they run on customers' machines and send nothing but the API
- * calls themselves. This runs on Edgegap's own Worker.
+ * calls themselves. Both packages are devDependencies, bundled into the Worker
+ * only.
  *
- * WHAT IS SENT, EXHAUSTIVELY (allowlisted per event, never tool arguments):
- *   - mcp_initialize:     MCP client name/version, protocol version
- *   - mcp_tool_call:      tool name, success, Edgegap API status on failure,
- *                         duration, dry_run, and the skill name for get_skill
- *   - mcp_prompt_get:     the prompt (skill) name
- *   - mcp_resource_read:  the skill resource path (edgegap-skill:// only)
- *   - on every event:     server version, read-only flag, whether a token was
- *                         present, Cloudflare's country code, HTTP User-Agent
+ * WHAT IS SENT. The SDK's events — $mcp_initialize, $mcp_tools_list,
+ * $mcp_tool_call, $mcp_resources_list, $mcp_resource_read — filtered through
+ * an ALLOWLIST (beforeSend below): only metadata properties pass. Tool name,
+ * duration, error flag and category, MCP client and protocol, argument NAMES,
+ * which tools were listed, and which skill resource was read. Plus ours: which
+ * skill edgegap_get_skill loaded, dry_run, read-only, whether a token was
+ * present, Cloudflare's country code. Skill prompt use is captured separately
+ * as $mcp_prompt_get, since the TypeScript SDK does not track prompts.
  *
- * NEVER SENT: the API token, tool arguments (IPs, env vars, image names, app
- * names), results, error text, or the client IP — GeoIP is disabled and the
- * country comes from Cloudflare.
+ * NEVER SENT. The API token. Tool argument values ($mcp_parameters: player IPs,
+ * env vars, app and image names, registry credentials), tool responses
+ * ($mcp_response), error text ($mcp_error_message, $exception), and anything a
+ * future SDK version adds: a property is dropped unless it is named below.
+ * GeoIP is off; the country comes from Cloudflare.
  *
- * Identity: distinct_id is an HMAC-SHA256 of the API token keyed with the
- * TELEMETRY_SALT secret, so events from one organization's token group
- * together without the token being recoverable. Without the salt, or without
- * a token, events are anonymous and create no person profile.
+ * AGENT FIELDS. The SDK can add `context`, `conversation_id` and `llm_model`
+ * parameters to every tool, so agents state their intent and correlate calls.
+ * That changes every tool's input schema and records free text written by the
+ * agent, so it is OFF unless POSTHOG_AGENT_FIELDS is "1".
+ *
+ * IDENTITY. distinct_id is org_ + HMAC-SHA256(token, TELEMETRY_SALT): one
+ * organization's events group together, and the token cannot be recovered.
+ * With no token or no salt, sessions are anonymous (no person profile).
  *
  * Off unless POSTHOG_API_KEY is set. A client can opt out of any request with
- * the header "X-Edgegap-Telemetry: off" (or "DNT: 1").
- *
- * Every send goes through ctx.waitUntil with a short timeout and swallows
- * errors: analytics must never delay or break an MCP response.
+ * "X-Edgegap-Telemetry: off" (or "DNT: 1"). Events are flushed through
+ * ctx.waitUntil, so analytics never delays or breaks an MCP response.
  */
 
-import type { ToolCallEvent } from '../src/tools.js';
+import { PostHog } from 'posthog-node';
+import { instrument } from '@posthog/mcp';
+import type { BeforeSendFn, MCPAnalyticsOptions } from '@posthog/mcp';
+import type { McpServer as McpServerV1 } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 export interface TelemetryEnv {
-  /** PostHog project API key. Telemetry is off when unset. Set as a secret. */
+  /** PostHog project API key (phc_...). Analytics is off when unset. Set as a secret. */
   POSTHOG_API_KEY?: string;
   /** "https://us.i.posthog.com" (default) or "https://eu.i.posthog.com". */
   POSTHOG_HOST?: string;
   /** Secret key for hashing tokens into distinct_ids. Anonymous when unset. */
   TELEMETRY_SALT?: string;
+  /** "1" lets the SDK add context, conversation_id and llm_model parameters to every tool. */
+  POSTHOG_AGENT_FIELDS?: string;
 }
 
-export interface Telemetry {
-  /** Records MCP-level events from the JSON-RPC request body. */
+export interface Analytics {
+  /** Instruments one per-request MCP server. Call after its tools are registered. */
+  instrument(server: unknown): void;
+  /** Records skill prompt reads from the JSON-RPC body; the TS SDK has no prompt event. */
   observeRpc(body: unknown): void;
-  /** Hook for registerTools: records each tool call's outcome. */
-  toolCall(event: ToolCallEvent): void;
+  /** Sends queued events after the response, without delaying it. */
+  flush(): void;
 }
 
-interface Context {
-  serverVersion: string;
-  readOnly: boolean;
-  token: string | undefined;
-}
+/** How long after the response to flush; see Analytics.flush. */
+const FLUSH_DELAY_MS = 250;
 
-const SEND_TIMEOUT_MS = 3000;
+/** SDK events allowed out. Anything else, including $exception, is dropped. */
+const EVENTS = new Set([
+  '$mcp_initialize',
+  '$mcp_tools_list',
+  '$mcp_tool_call',
+  '$mcp_resources_list',
+  '$mcp_resource_read',
+  '$mcp_prompt_get',
+  '$identify',
+]);
+
+/** Metadata properties allowed out. Everything not named here is dropped. */
+const PROPERTIES = new Set([
+  '$session_id', '$process_person_profile', '$groups', '$lib', '$lib_version', '$geoip_disable',
+  '$mcp_source', '$mcp_protocol_version', '$mcp_client_name', '$mcp_client_version',
+  '$mcp_vendor_client', '$mcp_client_user_agent', '$mcp_server_name', '$mcp_server_version',
+  '$mcp_server_build', '$mcp_tool_name', '$mcp_tool_category', '$mcp_duration_ms',
+  '$mcp_is_error', '$mcp_error_type', '$mcp_input_keys', '$mcp_input_aliases_used',
+  '$mcp_listed_tool_names', '$mcp_resource_name',
+  // Ours, from eventProperties.
+  'read_only', 'has_token', 'country', 'skill', 'dry_run', 'prompt',
+]);
+
+/** Extra properties when POSTHOG_AGENT_FIELDS is on: the agent-written fields. */
+const AGENT_PROPERTIES = ['$mcp_intent', '$mcp_intent_source', '$mcp_llm_model', '$mcp_llm_model_source', '$mcp_conversation_id'];
+
+function allowlist(agentFields: boolean): BeforeSendFn {
+  const allowed = new Set([...PROPERTIES, ...(agentFields ? AGENT_PROPERTIES : [])]);
+  return (event) => {
+    if (!EVENTS.has(event.event)) return null;
+    const properties: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(event.properties ?? {})) {
+      if (allowed.has(k)) properties[k] = v;
+    }
+    // Skill files are public content; any other resource is reported as "other".
+    if (typeof properties.$mcp_resource_name === 'string' && !properties.$mcp_resource_name.startsWith('edgegap-skill://')) {
+      properties.$mcp_resource_name = 'other';
+    }
+    properties.$geoip_disable = true;
+    return { ...event, properties };
+  };
+}
 
 async function hmac(key: string, value: string): Promise<string> {
   const k = await crypto.subtle.importKey('raw', new TextEncoder().encode(key), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
@@ -67,85 +118,97 @@ function optedOut(request: Request): boolean {
   return flag === 'off' || flag === '0' || flag === 'false' || request.headers.get('DNT') === '1';
 }
 
-const short = (v: unknown, max = 120) => (typeof v === 'string' ? v.slice(0, max) : undefined);
+// One posthog-node client per isolate and key: it is only a queue and a
+// fetch, and creating it per request would lose nothing but time.
+let shared: { key: string; host: string; client: PostHog } | undefined;
+function client(key: string, host: string): PostHog {
+  if (!shared || shared.key !== key || shared.host !== host) {
+    shared = { key, host, client: new PostHog(key, { host, disableGeoip: true, flushAt: 20, flushInterval: 0 }) };
+  }
+  return shared.client;
+}
 
-export function createTelemetry(
+export function createAnalytics(
   env: TelemetryEnv,
   request: Request,
   ctx: ExecutionContext,
-  context: Context
-): Telemetry | undefined {
-  const apiKey = env.POSTHOG_API_KEY?.trim();
-  if (!apiKey || optedOut(request)) return undefined;
+  context: { serverVersion: string; readOnly: boolean; token: string | undefined }
+): Analytics | undefined {
+  const key = env.POSTHOG_API_KEY?.trim();
+  if (!key || optedOut(request)) return undefined;
   const host = (env.POSTHOG_HOST?.trim() || 'https://us.i.posthog.com').replace(/\/+$/, '');
+  const posthog = client(key, host);
+  const agentFields = env.POSTHOG_AGENT_FIELDS === '1';
 
-  // One id per request when anonymous; derived from the token otherwise.
   const salt = env.TELEMETRY_SALT?.trim();
-  const identity: Promise<{ id: string; person: boolean }> =
-    context.token && salt
-      ? hmac(salt, context.token).then((h) => ({ id: `org_${h}`, person: true }))
-      : Promise.resolve({ id: `anon_${crypto.randomUUID()}`, person: false });
+  const distinctId: Promise<string | undefined> =
+    context.token && salt ? hmac(salt, context.token).then((h) => `org_${h}`) : Promise.resolve(undefined);
+  const country = (request as Request & { cf?: { country?: string } }).cf?.country;
 
-  const cf = (request as Request & { cf?: { country?: string } }).cf;
-  const common = {
-    server_version: context.serverVersion,
-    transport: 'hosted',
-    read_only: context.readOnly,
-    has_token: Boolean(context.token),
-    country: cf?.country,
-    user_agent: short(request.headers.get('User-Agent')),
-    $geoip_disable: true,
-    $lib: 'edgegap-mcp-worker',
-  };
-
-  const capture = (event: string, properties: Record<string, unknown>) => {
-    const timestamp = new Date().toISOString();
-    ctx.waitUntil(
-      (async () => {
-        try {
-          const { id, person } = await identity;
-          await fetch(`${host}/i/v0/e/`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              api_key: apiKey,
-              event,
-              distinct_id: id,
-              timestamp,
-              properties: { ...common, ...properties, ...(person ? {} : { $process_person_profile: false }) },
-            }),
-            signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
-          });
-        } catch {
-          // Analytics is best-effort. Never surface it.
-        }
-      })()
-    );
+  const options: MCPAnalyticsOptions = {
+    serverBuild: context.serverVersion,
+    context: agentFields,
+    enableConversationId: agentFields,
+    captureModel: agentFields,
+    enableExceptionAutocapture: false,
+    identify: async () => {
+      const id = await distinctId;
+      return id ? { distinctId: id } : null;
+    },
+    // Facts we choose to add, read from the request without forwarding it.
+    eventProperties: (req) => {
+      const args = (req?.params?.arguments ?? {}) as Record<string, unknown>;
+      return {
+        read_only: context.readOnly,
+        has_token: Boolean(context.token),
+        ...(country ? { country } : {}),
+        ...(req?.params?.name === 'edgegap_get_skill' && typeof args.skill === 'string' ? { skill: args.skill.slice(0, 80) } : {}),
+        ...(args.dry_run === true ? { dry_run: true } : {}),
+      };
+    },
+    beforeSend: allowlist(agentFields),
   };
 
   return {
-    observeRpc(body) {
-      for (const msg of Array.isArray(body) ? body : [body]) {
-        if (!msg || typeof msg !== 'object') continue;
-        const { method, params } = msg as { method?: string; params?: Record<string, unknown> };
-        if (method === 'initialize') {
-          const client = (params?.clientInfo ?? {}) as { name?: unknown; version?: unknown };
-          capture('mcp_initialize', {
-            client_name: short(client.name, 80),
-            client_version: short(client.version, 40),
-            protocol_version: short(params?.protocolVersion, 20),
-          });
-        } else if (method === 'prompts/get') {
-          capture('mcp_prompt_get', { prompt: short(params?.name, 80) });
-        } else if (method === 'resources/read') {
-          const uri = short(params?.uri, 200) ?? '';
-          // Skill files are public content; any other URI is reported only as "other".
-          capture('mcp_resource_read', { resource: uri.startsWith('edgegap-skill://') ? uri : 'other' });
-        }
+    instrument(server) {
+      try {
+        instrument(server as McpServerV1, posthog, options);
+      } catch {
+        // Analytics must never stop the server from serving.
       }
     },
-    toolCall(e) {
-      capture('mcp_tool_call', { ...e });
+    observeRpc(body) {
+      for (const msg of Array.isArray(body) ? body : [body]) {
+        const m = msg as { method?: string; params?: { name?: unknown } } | null;
+        if (m?.method !== 'prompts/get' || typeof m.params?.name !== 'string') continue;
+        const prompt = m.params.name.slice(0, 80);
+        ctx.waitUntil(
+          distinctId.then((id) => {
+            const props = allowlist(agentFields)({
+              event: '$mcp_prompt_get',
+              distinct_id: id ?? `anon_${crypto.randomUUID()}`,
+              properties: { prompt, read_only: context.readOnly, has_token: Boolean(context.token), country, ...(id ? {} : { $process_person_profile: false }) },
+              timestamp: new Date().toISOString(),
+              type: 'capture',
+            } as Parameters<BeforeSendFn>[0]) as { distinct_id: string; properties: Record<string, unknown> } | null;
+            if (!props) return;
+            posthog.capture({ distinctId: props.distinct_id, event: '$mcp_prompt_get', properties: props.properties });
+            return posthog.flush();
+          }).catch(() => {})
+        );
+      }
+    },
+    flush() {
+      // @posthog/mcp builds each event asynchronously (identify, eventProperties,
+      // beforeSend) and only then hands it to posthog-node, without exposing that
+      // promise. Flushing as the response returns misses the last call's event,
+      // so keep the request alive briefly under waitUntil, then flush. The
+      // response is never delayed; the wait is idle time, not CPU.
+      ctx.waitUntil(
+        new Promise((resolve) => setTimeout(resolve, FLUSH_DELAY_MS))
+          .then(() => posthog.flush())
+          .catch(() => {})
+      );
     },
   };
 }

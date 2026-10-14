@@ -43,8 +43,10 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260911.1",
     "@modelcontextprotocol/server": "^2.0.0",
+    "@posthog/mcp": "0.22.3",
     "@types/node": "^22.20.2",
     "agents": "^0.23.0",
+    "posthog-node": "5.56.1",
     "typescript": "^7.0.2",
     "wrangler": "^4.131.1"
   },

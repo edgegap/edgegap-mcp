@@ -32,8 +32,10 @@ Without OAuth, a hosted server has to get the token from somewhere. Two options:
 Note that "we do not store it" and "we never see it" are different claims. Only
 the local process makes the second one.
 
-The hosted Worker also sends usage analytics to PostHog (`worker/telemetry.ts`):
-allowlisted events only, never the token or tool arguments. The token is used
+The hosted Worker also sends usage analytics to PostHog through PostHog's MCP
+SDK (`@posthog/mcp`, wired in `worker/telemetry.ts`). Its defaults record tool
+argument values and responses; ours drop every property not on an allowlist of
+metadata, so never the token, argument values, responses or error text. The token is used
 once more there, as the input to a keyed hash (`TELEMETRY_SALT`) that groups an
 organization's events; the hash cannot be reversed to the token and is the
 only thing that leaves. The local server and the Docker image have no

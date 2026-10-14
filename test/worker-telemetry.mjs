@@ -1,11 +1,12 @@
-// End-to-end check of the hosted Worker's PostHog analytics: runs the real
-// Worker under `wrangler dev` with POSTHOG_HOST pointed at a local fake
-// PostHog, makes MCP calls, and inspects every payload the Worker sends.
+// End-to-end check of the hosted Worker's PostHog MCP Analytics (@posthog/mcp):
+// runs the real Worker under `wrangler dev` with POSTHOG_HOST pointed at a
+// local fake PostHog, makes MCP calls, and inspects every event it sends.
 //
 //   npm run test:worker      (needs wrangler; not part of `npm test`)
 //
 // No call reaches Edgegap: the only API-bound call uses dry_run.
 import http from 'node:http';
+import { gunzipSync } from 'node:zlib';
 import { spawn, spawnSync } from 'node:child_process';
 
 let failures = 0;
@@ -17,14 +18,24 @@ function check(label, cond, detail = '') {
 const TOKEN = '0f8b3c1e-e458-4592-b607-c2c28afd8b62';
 const SECRET_IP = '203.0.113.77';
 const SECRET_ENV = 'env-value-must-not-leak';
+const SECRET_APP = 'secret-app-name';
 
 // ------------------------------------------------------- fake PostHog ----
+// posthog-node posts batches, possibly gzip-compressed.
 const events = [];
+const raws = [];
 const posthog = http.createServer((req, res) => {
-  let body = '';
-  req.on('data', (c) => (body += c));
+  const chunks = [];
+  req.on('data', (c) => chunks.push(c));
   req.on('end', () => {
-    events.push({ path: req.url, raw: body, json: JSON.parse(body) });
+    let buf = Buffer.concat(chunks);
+    if (req.headers['content-encoding'] === 'gzip' || /compression=gzip/.test(req.url) || (buf[0] === 0x1f && buf[1] === 0x8b)) buf = gunzipSync(buf);
+    const text = buf.toString('utf8');
+    raws.push(text);
+    try {
+      const body = JSON.parse(text);
+      for (const e of body.batch ?? [body]) events.push({ ...e, api_key: body.api_key ?? e.api_key });
+    } catch {}
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end('{"status":"Ok"}');
   });
@@ -32,78 +43,116 @@ const posthog = http.createServer((req, res) => {
 await new Promise((r) => posthog.listen(0, '127.0.0.1', r));
 
 // ------------------------------------------------------------ Worker ----
-const port = 8700 + Math.floor(Math.random() * 90);
 const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx';
-const worker = spawn(npx, [
-  'wrangler', 'dev', '--config', 'worker/wrangler.jsonc', '--local', '--port', String(port),
-  '--var', 'POSTHOG_API_KEY:phc_test_key',
-  '--var', `POSTHOG_HOST:http://127.0.0.1:${posthog.address().port}`,
-  '--var', 'TELEMETRY_SALT:test-salt',
-], { stdio: ['ignore', 'pipe', 'pipe'], shell: process.platform === 'win32' });
-const base = `http://127.0.0.1:${port}`;
-for (let i = 0; i < 90; i++) {
-  try { if ((await fetch(`${base}/health`)).ok) break; } catch {}
-  await new Promise((r) => setTimeout(r, 1000));
+async function startWorker(extraVars = []) {
+  const port = 8700 + Math.floor(Math.random() * 90);
+  const proc = spawn(npx, [
+    'wrangler', 'dev', '--config', 'worker/wrangler.jsonc', '--local', '--port', String(port),
+    '--var', 'POSTHOG_API_KEY:phc_test_key',
+    '--var', `POSTHOG_HOST:http://127.0.0.1:${posthog.address().port}`,
+    '--var', 'TELEMETRY_SALT:test-salt',
+    ...extraVars.flatMap((v) => ['--var', v]),
+  ], { stdio: ['ignore', 'pipe', 'pipe'], shell: process.platform === 'win32' });
+  const base = `http://127.0.0.1:${port}`;
+  for (let i = 0; i < 90; i++) {
+    try { if ((await fetch(`${base}/health`)).ok) break; } catch {}
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  let id = 0;
+  const rpc = async (method, params, headers = {}) => {
+    const res = await fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'MCP-Protocol-Version': '2025-06-18', 'User-Agent': 'telemetry-test/1.0', ...headers },
+      body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params }),
+    });
+    const text = await res.text();
+    const m = text.match(/\{[\s\S]*\}/);
+    return m ? JSON.parse(m[0]) : undefined;
+  };
+  const stop = () => {
+    // wrangler starts workerd as a child: kill the whole tree, and wait for it.
+    if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { stdio: 'ignore' });
+    else proc.kill('SIGINT');
+  };
+  return { rpc, stop };
 }
+const settle = () => new Promise((r) => setTimeout(r, 2500));
+const of = (name) => events.filter((e) => e.event === name);
+const props = (e) => e?.properties ?? {};
 
-let id = 0;
-async function rpc(method, params, headers = {}) {
-  const res = await fetch(`${base}/mcp`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'MCP-Protocol-Version': '2025-06-18', 'User-Agent': 'telemetry-test/1.0', ...headers },
-    body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params }),
-  });
-  return res.text();
-}
-const settle = () => new Promise((r) => setTimeout(r, 1500));
-const byEvent = (name) => events.filter((e) => e.json.event === name);
-
+let w = await startWorker();
 try {
-  await rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'claude-code', version: '2.1.0' } });
-  await rpc('tools/call', { name: 'edgegap_get_skill', arguments: { skill: 'edgegap-unity' } });
-  await rpc('prompts/get', { name: 'edgegap-unreal' });
-  await rpc('resources/read', { uri: 'edgegap-skill://edgegap/SKILL.md' });
-  await rpc('tools/call', { name: 'edgegap_stop_deployment', arguments: { request_id: '*' } });
+  const init = await w.rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'claude-code', version: '2.1.0' } });
+  const list = await w.rpc('tools/list', {});
+  await w.rpc('tools/call', { name: 'edgegap_get_skill', arguments: { skill: 'edgegap-unity' } });
+  await w.rpc('prompts/get', { name: 'edgegap-unreal' });
+  await w.rpc('resources/read', { uri: 'edgegap-skill://edgegap/SKILL.md' });
+  await w.rpc('tools/call', { name: 'edgegap_stop_deployment', arguments: { request_id: '*' } });
   const auth = { Authorization: `token ${TOKEN}` };
-  await rpc('tools/call', { name: 'edgegap_deploy', arguments: { application: 'secret-app-name', version: 'v1', users: { ip_addresses: [SECRET_IP] }, env: [{ key: 'K', value: SECRET_ENV }], dry_run: true } }, auth);
-  await rpc('tools/call', { name: 'edgegap_context', arguments: {} }, auth);
+  await w.rpc('tools/call', { name: 'edgegap_deploy', arguments: { application: SECRET_APP, version: 'v1', users: { ip_addresses: [SECRET_IP] }, env: [{ key: 'K', value: SECRET_ENV }], dry_run: true } }, auth);
+  await w.rpc('tools/call', { name: 'edgegap_context', arguments: {} }, auth);
   await settle();
 
-  console.log('\nevents');
-  const init = byEvent('mcp_initialize')[0]?.json;
-  check('initialize: client name and version', init?.properties.client_name === 'claude-code' && init.properties.client_version === '2.1.0');
-  const skill = byEvent('mcp_tool_call').find((e) => e.json.properties.tool === 'edgegap_get_skill')?.json;
-  check('get_skill: tool, success and skill name', skill?.properties.success === true && skill.properties.skill === 'edgegap-unity');
-  check('prompt read: skill name', byEvent('mcp_prompt_get')[0]?.json.properties.prompt === 'edgegap-unreal');
-  check('resource read: skill URI', byEvent('mcp_resource_read')[0]?.json.properties.resource === 'edgegap-skill://edgegap/SKILL.md');
-  const refused = byEvent('mcp_tool_call').find((e) => e.json.properties.tool === 'edgegap_stop_deployment')?.json;
-  check('a refused stop: success false, error_kind refused', refused?.properties.success === false && refused.properties.error_kind === 'refused');
-  const deploy = byEvent('mcp_tool_call').find((e) => e.json.properties.tool === 'edgegap_deploy')?.json;
-  check('deploy dry run: dry_run true, duration recorded', deploy?.properties.dry_run === true && typeof deploy.properties.duration_ms === 'number');
-  check('posted to /i/v0/e/ with the project key', events.every((e) => e.path === '/i/v0/e/' && e.json.api_key === 'phc_test_key'));
+  console.log('\nthe Worker still works');
+  check('initialize answers', init?.result?.serverInfo?.name === 'edgegap');
+  const tools = list?.result?.tools ?? [];
+  check('tools/list returns every tool', tools.length >= 20, `${tools.length}`);
+  const injected = tools.filter((t) => ['context', 'conversation_id', 'llm_model'].some((k) => k in (t.inputSchema?.properties ?? {})));
+  check('no analytics parameters added to tool schemas (agent fields off)', injected.length === 0, injected.map((t) => t.name).join(', '));
+
+  console.log('\nPostHog MCP Analytics events');
+  check('posted with the project key', events.length > 0 && events.every((e) => e.api_key === 'phc_test_key'), `${events.length} events`);
+  check('$mcp_initialize with the client name', of('$mcp_initialize').some((e) => props(e).$mcp_client_name === 'claude-code'));
+  check('$mcp_tools_list with tool names', of('$mcp_tools_list').some((e) => (props(e).$mcp_listed_tool_names ?? []).includes('edgegap_deploy')));
+  const skill = of('$mcp_tool_call').find((e) => props(e).$mcp_tool_name === 'edgegap_get_skill');
+  check('$mcp_tool_call for get_skill, with the skill and a duration', props(skill).skill === 'edgegap-unity' && typeof props(skill).$mcp_duration_ms === 'number');
+  const stopped = of('$mcp_tool_call').find((e) => props(e).$mcp_tool_name === 'edgegap_stop_deployment');
+  check('a refused stop is recorded as an error', props(stopped).$mcp_is_error === true);
+  const deploy = of('$mcp_tool_call').find((e) => props(e).$mcp_tool_name === 'edgegap_deploy');
+  check('deploy dry run recorded with dry_run', props(deploy).dry_run === true);
+  check('$mcp_resource_read with the skill URI', of('$mcp_resource_read').some((e) => props(e).$mcp_resource_name === 'edgegap-skill://edgegap/SKILL.md'));
+  check('$mcp_prompt_get with the skill name', of('$mcp_prompt_get').some((e) => props(e).prompt === 'edgegap-unreal'));
 
   console.log('\nidentity');
-  const withToken = events.filter((e) => e.json.properties.has_token === true);
-  const anon = events.filter((e) => e.json.properties.has_token === false);
-  check('token requests: hashed org_ id, the same for both calls', withToken.length >= 2 && withToken.every((e) => /^org_[0-9a-f]{32}$/.test(e.json.distinct_id)) && new Set(withToken.map((e) => e.json.distinct_id)).size === 1);
-  check('no-token requests: anonymous, no person profile', anon.length > 0 && anon.every((e) => e.json.distinct_id.startsWith('anon_') && e.json.properties.$process_person_profile === false));
+  const withToken = [deploy, ...of('$mcp_tool_call').filter((e) => props(e).$mcp_tool_name === 'edgegap_context')].filter(Boolean);
+  check('token calls: one hashed org_ id', withToken.length === 2 && withToken.every((e) => /^org_[0-9a-f]{32}$/.test(e.distinct_id)) && new Set(withToken.map((e) => e.distinct_id)).size === 1, withToken.map((e) => e.distinct_id).join(' '));
+  check('no-token calls: never an org_ id', of('$mcp_tool_call').filter((e) => props(e).has_token === false).every((e) => !String(e.distinct_id).startsWith('org_')));
 
   console.log('\nprivacy');
-  const everything = events.map((e) => e.raw).join('\n');
+  const everything = raws.join('\n');
   check('the API token is never sent', !everything.includes(TOKEN) && !everything.includes(TOKEN.replace(/-/g, '')));
-  check('tool arguments are never sent (IP, env value, app name)', !everything.includes(SECRET_IP) && !everything.includes(SECRET_ENV) && !everything.includes('secret-app-name'));
-  check('GeoIP disabled on every event', events.every((e) => e.json.properties.$geoip_disable === true));
+  check('tool argument values are never sent (IP, env value, app name)', !everything.includes(SECRET_IP) && !everything.includes(SECRET_ENV) && !everything.includes(SECRET_APP));
+  check('no $mcp_parameters, $mcp_response or error text', events.every((e) => !('$mcp_parameters' in props(e)) && !('$mcp_response' in props(e)) && !('$mcp_error_message' in props(e))));
+  check('no $exception events', of('$exception').length === 0);
+  check('no skill document content in any event', !everything.includes('Pack version:'));
+  check('GeoIP disabled on every event', events.every((e) => props(e).$geoip_disable === true));
+  check('only allowlisted event names', events.every((e) => ['$mcp_initialize', '$mcp_tools_list', '$mcp_tool_call', '$mcp_resources_list', '$mcp_resource_read', '$mcp_prompt_get', '$identify'].includes(e.event)), [...new Set(events.map((e) => e.event))].join(', '));
 
   console.log('\nopt-out');
   const before = events.length;
-  await rpc('tools/call', { name: 'edgegap_list_skills', arguments: {} }, { 'X-Edgegap-Telemetry': 'off' });
-  await rpc('tools/call', { name: 'edgegap_list_skills', arguments: {} }, { DNT: '1' });
+  await w.rpc('tools/call', { name: 'edgegap_list_skills', arguments: {} }, { 'X-Edgegap-Telemetry': 'off' });
+  await w.rpc('tools/call', { name: 'edgegap_list_skills', arguments: {} }, { DNT: '1' });
   await settle();
   check('X-Edgegap-Telemetry: off and DNT: 1 send nothing', events.length === before, `${events.length - before} events`);
 } finally {
-  // wrangler starts workerd as a child: kill the whole tree, and wait for it.
-  if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(worker.pid), '/T', '/F'], { stdio: 'ignore' });
-  else worker.kill('SIGINT');
+  w.stop();
+}
+
+// ---------------------------------------------- agent fields switched on ----
+console.log('\nPOSTHOG_AGENT_FIELDS=1');
+events.length = 0;
+w = await startWorker(['POSTHOG_AGENT_FIELDS:1']);
+try {
+  const list = await w.rpc('tools/list', {});
+  const deploySchema = (list?.result?.tools ?? []).find((t) => t.name === 'edgegap_deploy')?.inputSchema?.properties ?? {};
+  check('the SDK adds its context parameter to tool schemas', 'context' in deploySchema, Object.keys(deploySchema).join(', '));
+  const out = await w.rpc('tools/call', { name: 'edgegap_list_skills', arguments: { context: 'checking which Edgegap skills exist' } });
+  check('a call with context still works', out?.result && !out.result.isError);
+  await settle();
+  const call = of('$mcp_tool_call').find((e) => props(e).$mcp_tool_name === 'edgegap_list_skills');
+  check('the intent is recorded', props(call).$mcp_intent === 'checking which Edgegap skills exist');
+} finally {
+  w.stop();
   posthog.close();
 }
 

@@ -124,7 +124,7 @@ is a local-emulation artifact and does not occur when deployed.
 npm run worker:check
 ```
 
-Expect `Total Upload: ~1560 KiB / gzip: ~315 KiB` and `--dry-run: exiting now.`
+Expect `Total Upload: ~2040 KiB / gzip: ~420 KiB` and `--dry-run: exiting now.`
 Nothing is published.
 
 ## 7. Log in to Cloudflare
@@ -138,8 +138,8 @@ Opens a browser for OAuth. One time per machine. For CI, set a
 
 ## 8. Deploy
 
-Optional, once: turn on usage analytics (PostHog). Without these secrets the
-Worker sends none. `POSTHOG_HOST` in `wrangler.jsonc` defaults to the US
+Optional, once: turn on usage analytics ([PostHog MCP Analytics](https://posthog.com/docs/mcp-analytics),
+through `@posthog/mcp`). Without these secrets the Worker sends none. `POSTHOG_HOST` in `wrangler.jsonc` defaults to the US
 cloud; change it to `https://eu.i.posthog.com` for an EU project.
 
 ```bash
@@ -152,6 +152,12 @@ long random string (`openssl rand -hex 32`); it hashes tokens into stable,
 non-reversible IDs, and without it every event is anonymous. Keep it
 unchanged, or every organization shows up as new. What is sent is listed in
 `worker/telemetry.ts`; `npm run test:worker` checks it end to end.
+
+PostHog's intent capture is off: it adds `context`, `conversation_id` and
+`llm_model` parameters to every tool, changing their schemas, and records text
+the agent writes. To turn it on, set `"POSTHOG_AGENT_FIELDS": "1"` under
+`vars` in `wrangler.jsonc` and update the README's analytics paragraph, which
+promises the opposite.
 
 ```bash
 npm run worker:deploy

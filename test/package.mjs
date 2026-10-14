@@ -31,7 +31,7 @@ check('the command runs the stdio server', pkg.bin?.['edgegap-mcp'] === 'dist/in
 // Everything in dependencies is installed by every `npx @edgegap/mcp`. The
 // Cloudflare Worker's packages pulled in Babel 8, whose engines (^22.18 ||
 // >=24.11) printed a dozen EBADENGINE warnings on Node 22.15.
-for (const workerOnly of ['agents', '@modelcontextprotocol/server', 'wrangler']) {
+for (const workerOnly of ['agents', '@modelcontextprotocol/server', 'wrangler', '@posthog/mcp', 'posthog-node']) {
   check(`${workerOnly} is not a runtime dependency`, !(workerOnly in (pkg.dependencies ?? {})));
 }
 check('repository field set, so npm links to the source', /github\.com\/edgegap\/edgegap-mcp/.test(pkg.repository?.url ?? ''));
