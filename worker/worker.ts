@@ -42,8 +42,9 @@ import { registerTools, serverInstructions } from '../src/tools.js';
 import type { Config } from '../src/config.js';
 import { extractToken, unavailableMessage } from '../src/hosted.js';
 import { VERSION } from '../src/version.js';
+import { createTelemetry, type TelemetryEnv } from './telemetry.js';
 
-export interface Env {
+export interface Env extends TelemetryEnv {
   EDGEGAP_APP_ALLOWLIST?: string;
   EDGEGAP_MAX_DURATION_MINUTES?: string;
   EDGEGAP_READ_ONLY?: string;
@@ -88,6 +89,17 @@ export default {
     const { token, problem } = extractToken(request.headers.get('Authorization'));
     const config = configForRequest(env);
 
+    // Product analytics (PostHog), off unless POSTHOG_API_KEY is set. See
+    // telemetry.ts for exactly what is sent; never the token or arguments.
+    const telemetry = createTelemetry(env, request, ctx, {
+      serverVersion: VERSION,
+      readOnly: config.readOnly,
+      token,
+    });
+    if (telemetry && request.method === 'POST') {
+      telemetry.observeRpc(await request.clone().json().catch(() => undefined));
+    }
+
     const handler = createMcpHandler(() => {
       const server = new McpServer(
         { name: 'edgegap', version: VERSION },
@@ -115,7 +127,8 @@ export default {
             (server as unknown as McpServerV1).server.getClientVersion?.()?.name,
         }),
         config,
-        auth
+        auth,
+        { onToolCall: telemetry?.toolCall }
       );
 
       return server;

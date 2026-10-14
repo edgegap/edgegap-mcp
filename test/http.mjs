@@ -77,6 +77,14 @@ for (const header of [`token token ${TOKEN}`, `Bearer token ${TOKEN}`, `Bearer $
   await c.close();
 }
 
+// The skills need no token, so they work on the hosted server even for clients
+// that cannot send one (claude.ai and Claude Desktop connectors).
+c = await connect();
+r = await c.callTool({ name: 'edgegap_list_skills', arguments: {} });
+check('skills are served without a token', !r.isError && /edgegap-unity/.test(text(r)));
+check('skill prompts are listed over HTTP', (await c.listPrompts()).prompts.some((p) => p.name === 'edgegap'));
+await c.close();
+
 proc.kill('SIGTERM');
 mock.close();
 console.log(failures === 0 ? '\nAll checks passed.' : `\n${failures} check(s) FAILED.`);

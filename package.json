@@ -1,19 +1,22 @@
 {
   "name": "@edgegap/mcp",
   "mcpName": "dev.edgegap/mcp",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Check, push, and deploy game servers on Edgegap from your coding agent, with relays for P2P games. Runs locally; your API token never leaves your machine.",
   "scripts": {
     "prebuild": "rm -rf dist",
     "build": "tsc && chmod +x dist/index.js dist/http.js",
     "typecheck": "tsc --noEmit",
     "typecheck:worker": "tsc -p worker/tsconfig.json --noEmit",
-    "test": "node test/package.mjs && node test/smoke.mjs && node test/guards.mjs && node test/elicit.mjs && node test/newtools.mjs && node test/http.mjs",
+    "test": "node test/package.mjs && node test/skills.mjs && node test/smoke.mjs && node test/guards.mjs && node test/elicit.mjs && node test/newtools.mjs && node test/http.mjs",
     "start:http": "node dist/index.js --http",
     "worker:dev": "wrangler dev --config worker/wrangler.jsonc --local --port 8787",
     "worker:check": "wrangler deploy --config worker/wrangler.jsonc --dry-run --outdir=.wrangler/dryrun",
     "worker:deploy": "wrangler deploy --config worker/wrangler.jsonc",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "sync-skills": "node scripts/sync-skills.mjs",
+    "check-skills": "node scripts/sync-skills.mjs --check",
+    "test:worker": "node test/worker-telemetry.mjs"
   },
   "keywords": [
     "mcp",
