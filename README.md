@@ -157,7 +157,7 @@ To keep your API token on your own machine, run the server locally instead. Leav
 }
 ```
 
-Needs Node 18+. Pin a version in production (`@edgegap/mcp@0.5.2`) rather than floating on latest. Registered in the official MCP registry as `dev.edgegap/mcp`.
+Needs Node 18+. Pin a version in production (`@edgegap/mcp@0.5.3`) rather than floating on latest. Registered in the official MCP registry as `dev.edgegap/mcp`.
 
 The local server can also limit what an agent can do. These variables have no effect on the hosted endpoint at `mcp.edgegap.dev`:
 
@@ -177,6 +177,7 @@ The server includes the [Edgegap agent skills](https://github.com/edgegap/edgega
 | --- | --- |
 | `edgegap` | Start here for any engine other than Unity or Unreal Engine, or platform questions. Routes to the rest. |
 | `edgegap-unity` | Unity end to end: server build, matchmaker, client, end-to-end test. |
+| `edgegap-fishnet` | Unity with FishNet end to end: headless server, Bayou/WebGL, matchmaker, end-to-end test. |
 | `edgegap-unreal` | Unreal Engine end to end: source engine, Linux server, matchmaker, end-to-end test. |
 | `edgegap-server-design` | Authoritative server design and the deployment lifecycle. |
 | `edgegap-containerize` | The container contract, Dockerfiles, registries, app versions. |
