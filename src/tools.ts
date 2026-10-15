@@ -65,9 +65,10 @@ export function serverInstructions(mode: 'local' | 'hosted'): string {
     `(Unity: ${skillUri('edgegap-unity', 'SKILL.md')}, ` +
     `Unity with FishNet: ${skillUri('edgegap-fishnet', 'SKILL.md')}, ` +
     `Unity with PurrNet: ${skillUri('edgegap-purrnet', 'SKILL.md')}, ` +
-    `Unreal Engine: ${skillUri('edgegap-unreal', 'SKILL.md')}). ` +
+    `Unreal Engine: ${skillUri('edgegap-unreal', 'SKILL.md')}, ` +
+    `browser game built with Manus: ${skillUri('edgegap-manus', 'SKILL.md')}). ` +
     'If your client cannot read MCP resources, call edgegap_get_skill with the skill name ' +
-    '(edgegap, edgegap-unity, edgegap-fishnet, edgegap-purrnet or edgegap-unreal) instead. ' +
+    '(edgegap, edgegap-unity, edgegap-fishnet, edgegap-purrnet, edgegap-unreal or edgegap-manus) instead. ' +
     'These Edgegap skills hold the tested workflow, templates and known pitfalls; follow them over general knowledge. ' +
     'edgegap_list_skills lists all of them.\n\n' +
     'Host multiplayer games on Edgegap. The recommended setup is an authoritative dedicated ' +
@@ -1750,7 +1751,7 @@ export function registerTools(
  * All three read the same bundle (src/skills.generated.ts). No token, no network.
  */
 function registerSkills(server: McpServer, tool: McpServer['registerTool']): void {
-  const names = SKILLS_PACK.skills.map((s) => s.name) as [string, ...string[]];
+  const names = SKILLS_PACK.skills.map((s) => s.name);
   const pack = `${SKILLS_PACK.version} (${SKILLS_PACK.commit.slice(0, 7)})`;
   const howToFetch = (skill: string) =>
     `Fetch any of these with edgegap_get_skill {skill: "${skill}", file: "<path>"}, or read the ` +
@@ -1766,8 +1767,8 @@ function registerSkills(server: McpServer, tool: McpServer['registerTool']): voi
         'game online on Edgegap, with templates (Dockerfiles, matchmaker configs, Unity C# and ' +
         'Unreal C++ drop-ins) and known pitfalls. Before working on a game project, load the ' +
         'matching skill with edgegap_get_skill: edgegap-fishnet for Unity with FishNet, ' +
-        'edgegap-purrnet for Unity with PurrNet, edgegap-unity for other Unity projects, edgegap-unreal for Unreal Engine, edgegap for ' +
-        'any other engine or platform questions; it routes to the rest. No ' +
+        'edgegap-purrnet for Unity with PurrNet, edgegap-unity for other Unity projects, edgegap-unreal for Unreal Engine, ' +
+        'edgegap-manus for a browser game built with Manus, edgegap for any other engine or platform questions; it routes to the rest. No ' +
         'API call.',
       inputSchema: {},
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
@@ -1794,10 +1795,14 @@ function registerSkills(server: McpServer, tool: McpServer['registerTool']): voi
         'Load one Edgegap agent skill: its SKILL.md (the workflow to follow) by default, or one of ' +
         'its reference documents or templates with file. Load the matching skill before acting on ' +
         'a game project — edgegap-fishnet for Unity with FishNet, edgegap-purrnet for Unity with ' +
-        'PurrNet, edgegap-unity for other Unity projects, edgegap-unreal for Unreal Engine, edgegap ' +
-        'otherwise — and fetch the references and templates it points to as you reach them. No API call.',
+        'PurrNet, edgegap-unity for other Unity projects, edgegap-unreal for Unreal Engine, ' +
+        'edgegap-manus for a browser game built with Manus, edgegap otherwise — and fetch the references and templates it points to as you reach them. No API call.',
       inputSchema: {
-        skill: z.enum(names).describe('Skill name, from edgegap_list_skills.'),
+        // A string, not an enum: clients cache tool schemas, and a cached enum from an older
+        // release would refuse a skill the router already points to. The handler checks the name.
+        skill: z
+          .string()
+          .describe(`Skill name, from edgegap_list_skills: ${names.join(', ')}.`),
         file: z
           .string()
           .optional()
@@ -1807,7 +1812,7 @@ function registerSkills(server: McpServer, tool: McpServer['registerTool']): voi
     },
     async ({ skill: name, file }) => {
       const skill = findSkill(name);
-      if (!skill) return fail(`No skill named "${name}". Call edgegap_list_skills.`);
+      if (!skill) return fail(`No skill named "${name}". The skills are: ${names.join(', ')}.`);
       const found = findSkillFile(skill, file);
       if (!found) {
         return fail(

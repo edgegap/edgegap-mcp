@@ -63,6 +63,7 @@ export function mimeType(path: string): string {
   if (path.endsWith('.cs')) return 'text/x-csharp';
   if (/\.(h|cpp)$/.test(path)) return 'text/x-c++src';
   if (path.endsWith('.xml')) return 'application/xml';
+  if (/\.(ts|mjs)$/.test(path)) return 'text/javascript';
   return 'text/plain';
 }
 

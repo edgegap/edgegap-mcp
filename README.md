@@ -179,6 +179,7 @@ The server includes the [Edgegap agent skills](https://github.com/edgegap/edgega
 | `edgegap-unity` | Unity end to end: server build, matchmaker, client, end-to-end test. |
 | `edgegap-fishnet` | Unity with FishNet end to end: headless server, Bayou/WebGL, matchmaker, end-to-end test. |
 | `edgegap-purrnet` | Unity with PurrNet end to end: dedicated server, connect panel, matchmaker, end-to-end test. |
+| `edgegap-manus` | Browser games built with Manus: backend matchmaking, Steam sign-in, signed join tokens, Node WebSocket server. |
 | `edgegap-unreal` | Unreal Engine end to end: source engine, Linux server, matchmaker, end-to-end test. |
 | `edgegap-server-design` | Authoritative server design and the deployment lifecycle. |
 | `edgegap-containerize` | The container contract, Dockerfiles, registries, app versions. |
