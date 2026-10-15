@@ -23,7 +23,7 @@ const totalFiles = SKILLS_PACK.skills.reduce((n, s) => n + s.files.length, 0);
 console.log('\nbundle');
 const pin = readFileSync('scripts/skills-pin.txt', 'utf8').trim();
 check('bundle is the pinned commit', SKILLS_PACK.commit === pin, `${SKILLS_PACK.commit} vs ${pin}`);
-check('bundle has the core skills', ['edgegap', 'edgegap-unity', 'edgegap-fishnet', 'edgegap-purrnet', 'edgegap-unreal'].every((n) => SKILLS_PACK.skills.some((s) => s.name === n)));
+check('bundle has the core skills', ['edgegap', 'edgegap-unity', 'edgegap-fishnet', 'edgegap-purrnet', 'edgegap-manus', 'edgegap-unreal'].every((n) => SKILLS_PACK.skills.some((s) => s.name === n)));
 check('every skill starts with its SKILL.md', SKILLS_PACK.skills.every((s) => s.files[0].path === 'SKILL.md' && s.files[0].content.includes(`name: ${s.name}`)));
 check('no evals, scripts or fixtures bundled', SKILLS_PACK.skills.every((s) => s.files.every((f) => !/^(evals|scripts|fixtures)\//.test(f.path))));
 check('no Windows line endings', SKILLS_PACK.skills.every((s) => s.files.every((f) => !f.content.includes('\r\n'))));
@@ -57,7 +57,14 @@ for (const bad of ['../edgegap/SKILL.md', '/etc/passwd', 'C:\\Windows\\win.ini',
   check(`file "${bad}" is not found, and the real files are listed`, r.isError && /is not a file in the edgegap-unity skill/.test(body(r)) && body(r).includes('- SKILL.md'));
 }
 r = await c.callTool({ name: 'edgegap_get_skill', arguments: { skill: 'not-a-skill' } }).catch((e) => ({ isError: true, content: [{ text: String(e) }] }));
-check('an unknown skill is rejected', r.isError === true);
+check('an unknown skill is rejected, and the real skills are listed', r.isError === true && body(r).includes('edgegap-purrnet') && body(r).includes('edgegap-manus'));
+const getSkill = (await c.listTools()).tools.find((t) => t.name === 'edgegap_get_skill');
+check('skill is a plain string, so a cached schema never blocks a newer skill', getSkill.inputSchema.properties.skill.type === 'string' && !getSkill.inputSchema.properties.skill.enum);
+check('every skill the router names can be loaded', [...SKILLS_PACK.skills.find((s) => s.name === 'edgegap').files[0].content.matchAll(/edgegap-[a-z-]+[a-z]/g)].map((m) => m[0]).filter((n) => !n.startsWith('edgegap-skill') && !n.startsWith('edgegap-mcp') && !n.startsWith('edgegap-agent')).every((n) => SKILLS_PACK.skills.some((s) => s.name === n)));
+r = await c.callTool({ name: 'edgegap_get_skill', arguments: { skill: 'edgegap-manus' } });
+check('edgegap-manus loads', !r.isError && body(r).startsWith('edgegap-manus'));
+r = await c.callTool({ name: 'edgegap_get_skill', arguments: { skill: 'edgegap-manus', file: 'assets/backend/joinToken.ts' } });
+check('TypeScript templates are bundled', !r.isError && body(r).includes('joinToken.ts'));
 
 console.log('\nprompts');
 const { prompts } = await c.listPrompts();
@@ -99,7 +106,7 @@ check('server instructions point at the skills', /edgegap_get_skill/.test(c.getI
 const instructions = c.getInstructions() ?? '';
 check('instructions open with the skills line', instructions.startsWith('Before acting, read edgegap-skill://edgegap/SKILL.md'), instructions.slice(0, 80));
 const linked = [...new Set(instructions.match(/edgegap-skill:\/\/[^\s),]+/g) ?? [])];
-check('instructions link the core, Unity, FishNet, PurrNet and Unreal skills', ['edgegap', 'edgegap-unity', 'edgegap-fishnet', 'edgegap-purrnet', 'edgegap-unreal'].every((s) => linked.includes(`edgegap-skill://${s}/SKILL.md`)), linked.join(' '));
+check('instructions link the core, Unity, FishNet, PurrNet, Unreal and Manus skills', ['edgegap', 'edgegap-unity', 'edgegap-fishnet', 'edgegap-purrnet', 'edgegap-manus', 'edgegap-unreal'].every((s) => linked.includes(`edgegap-skill://${s}/SKILL.md`)), linked.join(' '));
 for (const uri of linked) {
   const got = await c.readResource({ uri }).catch(() => undefined);
   check(`linked resource ${uri} resolves`, Boolean(got?.contents?.[0]?.text?.includes('name: ')));
