@@ -13,8 +13,10 @@
  * duration, error flag and category, MCP client and protocol, argument NAMES,
  * which tools were listed, and which skill resource was read. Plus ours: which
  * skill edgegap_get_skill loaded, dry_run, read-only, whether a token was
- * present, Cloudflare's country code. Skill prompt use is captured separately
- * as $mcp_prompt_get, since the TypeScript SDK does not track prompts.
+ * present and, when not, why (auth_problem: "absent" for no header, "foreign"
+ * for a bearer the MCP client issued itself), Cloudflare's country code. Skill
+ * prompt use is captured separately as $mcp_prompt_get, since the TypeScript
+ * SDK does not track prompts.
  *
  * NEVER SENT. The API token. Tool argument values ($mcp_parameters: player IPs,
  * env vars, app and image names, registry credentials), tool responses
@@ -84,7 +86,7 @@ const PROPERTIES = new Set([
   '$mcp_is_error', '$mcp_error_type', '$mcp_input_keys', '$mcp_input_aliases_used',
   '$mcp_listed_tool_names', '$mcp_resource_name',
   // Ours, from eventProperties.
-  'read_only', 'has_token', 'country', 'skill', 'dry_run', 'prompt',
+  'read_only', 'has_token', 'auth_problem', 'country', 'skill', 'dry_run', 'prompt',
 ]);
 
 /** Extra properties when POSTHOG_AGENT_FIELDS is on: the agent-written fields. */
@@ -132,7 +134,13 @@ export function createAnalytics(
   env: TelemetryEnv,
   request: Request,
   ctx: ExecutionContext,
-  context: { serverVersion: string; readOnly: boolean; token: string | undefined }
+  context: {
+    serverVersion: string;
+    readOnly: boolean;
+    token: string | undefined;
+    /** Why there is no usable token, from extractToken. */
+    authProblem?: 'absent' | 'foreign';
+  }
 ): Analytics | undefined {
   const key = env.POSTHOG_API_KEY?.trim();
   if (!key || optedOut(request)) return undefined;
@@ -144,6 +152,7 @@ export function createAnalytics(
   const distinctId: Promise<string | undefined> =
     context.token && salt ? hmac(salt, context.token).then((h) => `org_${h}`) : Promise.resolve(undefined);
   const country = (request as Request & { cf?: { country?: string } }).cf?.country;
+  const authProblem = context.token ? undefined : context.authProblem;
 
   const options: MCPAnalyticsOptions = {
     serverBuild: context.serverVersion,
@@ -161,6 +170,7 @@ export function createAnalytics(
       return {
         read_only: context.readOnly,
         has_token: Boolean(context.token),
+        ...(authProblem ? { auth_problem: authProblem } : {}),
         ...(country ? { country } : {}),
         ...(req?.params?.name === 'edgegap_get_skill' && typeof args.skill === 'string' ? { skill: args.skill.slice(0, 80) } : {}),
         ...(args.dry_run === true ? { dry_run: true } : {}),
@@ -187,7 +197,7 @@ export function createAnalytics(
             const props = allowlist(agentFields)({
               event: '$mcp_prompt_get',
               distinct_id: id ?? `anon_${crypto.randomUUID()}`,
-              properties: { prompt, read_only: context.readOnly, has_token: Boolean(context.token), country, ...(id ? {} : { $process_person_profile: false }) },
+              properties: { prompt, read_only: context.readOnly, has_token: Boolean(context.token), ...(authProblem ? { auth_problem: authProblem } : {}), country, ...(id ? {} : { $process_person_profile: false }) },
               timestamp: new Date().toISOString(),
               type: 'capture',
             } as Parameters<BeforeSendFn>[0]) as { distinct_id: string; properties: Record<string, unknown> } | null;
