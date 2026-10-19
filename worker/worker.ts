@@ -95,6 +95,7 @@ export default {
       serverVersion: VERSION,
       readOnly: config.readOnly,
       token,
+      authProblem: problem,
     });
     if (analytics && request.method === 'POST') {
       analytics.observeRpc(await request.clone().json().catch(() => undefined));
