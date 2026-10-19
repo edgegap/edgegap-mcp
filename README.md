@@ -333,7 +333,16 @@ npm test                  # mock-API tests; none reach Edgegap
 npm run typecheck:worker
 ```
 
-To update the bundled skills to the latest commit of [edgegap-agent-skills](https://github.com/edgegap/edgegap-agent-skills), then release as usual:
+### Releasing
+
+Merging a version bump to `main` is the release. [`release.yml`](.github/workflows/release.yml) publishes to npm, deploys mcp.edgegap.dev, publishes to the MCP registry, tags `v<version>` and pushes the versioned Docker image, skipping whatever is already live. A failed run can be re-run as is.
+
+```bash
+node scripts/bump-version.mjs patch   # or minor, major, x.y.z: every file that holds the version
+node scripts/release-state.mjs        # where the current version is live; exit 1 until all of it is
+```
+
+To update the bundled skills to the latest commit of [edgegap-agent-skills](https://github.com/edgegap/edgegap-agent-skills), then bump the version:
 
 ```bash
 npm run sync-skills -- --ref main

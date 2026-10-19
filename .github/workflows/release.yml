@@ -1,0 +1,108 @@
+# Releases the version in package.json wherever it is not live yet: npm, the
+# hosted server (Cloudflare Worker at mcp.edgegap.dev), the MCP registry, the
+# v<version> tag + GitHub release, and the versioned Docker image.
+#
+# Runs on every push to main, so merging a PR that bumps the version is the
+# release (scripts/bump-version.mjs). A push without a bump finds everything
+# live and does nothing. If a step fails, fix the cause and re-run the workflow
+# (Actions tab or `gh workflow run release.yml`): finished steps are skipped.
+#
+# One-time setup:
+#   npm: trusted publisher on @edgegap/mcp for edgegap/edgegap-mcp, workflow
+#        release.yml, environment release (no npm token stored).
+#   secrets CLOUDFLARE_API_TOKEN (Edit Cloudflare Workers) and
+#        MCP_REGISTRY_PRIVATE_KEY (ed25519 key behind the edgegap.dev TXT
+#        record), in the "release" environment.
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write   # tag + GitHub release
+      id-token: write   # npm trusted publishing and provenance
+    outputs:
+      version: ${{ steps.state.outputs.version }}
+      tagged: ${{ steps.state.outputs.tag }}
+    env:
+      CLOUDFLARE_ACCOUNT_ID: 72853754f2a79322f9855b09d5f539a6
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - name: Where this version is live
+        id: state
+        run: node scripts/release-state.mjs --github
+
+      - name: Build and test
+        if: steps.state.outputs.npm != 'true' || steps.state.outputs.hosted != 'true' || steps.state.outputs.registry != 'true'
+        run: |
+          npm ci --no-audit --no-fund
+          npm run typecheck
+          npm run typecheck:worker
+          npm run build
+          npm test
+
+      - name: Publish to npm
+        if: steps.state.outputs.npm != 'true'
+        run: |
+          npm install -g npm@^11.5.1
+          npm publish --provenance --access public
+
+      - name: Deploy hosted server
+        if: steps.state.outputs.hosted != 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npm run worker:deploy
+
+      - name: Publish to MCP registry
+        if: steps.state.outputs.registry != 'true'
+        env:
+          MCP_REGISTRY_PRIVATE_KEY: ${{ secrets.MCP_REGISTRY_PRIVATE_KEY }}
+        run: |
+          curl -sSL https://github.com/modelcontextprotocol/registry/releases/download/v1.8.1/mcp-publisher_linux_amd64.tar.gz | tar xz mcp-publisher
+          ./mcp-publisher login dns --domain edgegap.dev --private-key "$MCP_REGISTRY_PRIVATE_KEY"
+          ./mcp-publisher publish
+
+      - name: Tag and GitHub release
+        if: steps.state.outputs.tag != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ steps.state.outputs.version }}
+        run: gh release create "v$V" --target "$GITHUB_SHA" --title "v$V" --generate-notes
+
+      - name: Verify
+        run: |
+          sleep 20
+          node scripts/release-state.mjs
+
+  # Tags created with the workflow token do not trigger docker.yml, so build
+  # the versioned image here.
+  image:
+    needs: release
+    if: needs.release.outputs.tagged != 'true'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/docker.yml
+    with:
+      version: ${{ needs.release.outputs.version }}

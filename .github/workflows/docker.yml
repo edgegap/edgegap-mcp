@@ -2,7 +2,8 @@
 # Registry, for hosts that pull it (e.g. the support agent VM). Uses the
 # workflow's own GITHUB_TOKEN; no repository secrets needed.
 #
-# Tags pushed: sha-<commit> and main on every push to main; <version> on v* tags.
+# Tags pushed: sha-<commit> and main on every push to main; <version> on v*
+# tags, or when release.yml calls this with the version it just tagged.
 
 name: Docker image
 
@@ -11,6 +12,11 @@ on:
     branches: [main]
     tags: ['v*']
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -33,6 +39,7 @@ jobs:
             type=sha,prefix=sha-
             type=ref,event=branch
             type=semver,pattern={{version}}
+            type=raw,value=${{ inputs.version }},enable=${{ inputs.version != '' }}
 
       - uses: docker/setup-buildx-action@v3
 
