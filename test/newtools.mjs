@@ -17,6 +17,8 @@ let provisioned = false;
 // API token gets 403 from both (verified against the live API, 2026-10-08).
 let tokenType = 'regular';
 let relayPolls = 0;
+// How many agent-tagged deployments the mock reports as running (the deploy cap).
+let agentRunning = 0;
 // Images in the token's registry project. The API takes the image name only
 // and reads the project from the token; nested names keep their slashes.
 const REGISTRY_IMAGES = {
@@ -92,11 +94,14 @@ const mock = http.createServer((req, res) => {
       // Guardrail routes. max_duration: 60 (capped), 1440 (the API default,
       // a full day), -1 (no auto-stop).
       case 'GET /v1/app/my-game/version/build-42':
-        return send(200, { name: 'build-42', max_duration: 60 });
+        return send(200, { name: 'build-42', docker_tag: 'build-42', max_duration: 60 });
       case 'GET /v1/app/my-game/version/long-1':
-        return send(200, { name: 'long-1', max_duration: 1440 });
+        return send(200, { name: 'long-1', docker_tag: 'long-1', max_duration: 1440 });
       case 'GET /v1/app/my-game/version/forever':
-        return send(200, { name: 'forever', max_duration: -1 });
+        return send(200, { name: 'forever', docker_tag: 'forever', max_duration: -1 });
+      // A version made outside the agent, on the moving tag.
+      case 'GET /v1/app/my-game/version/latest-1':
+        return send(200, { name: 'latest-1', docker_tag: 'latest', max_duration: 60 });
       case 'POST /v2/deployments':
         return send(200, { request_id: '7e709a0d8efd' });
       case 'DELETE /v1/stop/7e709a0d8efd':
@@ -106,6 +111,11 @@ const mock = http.createServer((req, res) => {
       case 'GET /v1/app/ghost-game/versions':
         return send(404, { message: 'App not found' });
       case 'GET /v1/deployments':
+        // The deploy cap asks for agent-tagged deployments with limit 1 and
+        // reads total_count.
+        if (new URL(req.url, 'http://x').searchParams.get('limit') === '1') {
+          return send(200, { data: [], total_count: agentRunning });
+        }
         return send(200, { data: [{ request_id: '7e709a0d8efd', ready: true, fqdn: '7e709a0d8efd.pr.edgegap.net', start_time: '2026-09-30T12:00:00Z', tags: [] }], total_count: 1 });
       default:
         return send(500, { message: `mock has no route for ${route}` });
@@ -156,6 +166,10 @@ for (const code of ['wrong-platform', 'unreal-root', 'crlf-script', 'loopback-bi
   check(`flags ${code}`, codes.includes(code), codes.join(','));
 }
 check('returns reference Unreal Dockerfile on failure', /USER server/.test(r.reference_dockerfile ?? ''));
+r = json(await c.callTool({ name: 'edgegap_validate_server_config', arguments: { docker_repository: 'docker.io', docker_image: 'docker.io/me/srv:v1', docker_tag: 'v1' } }));
+check('image reference with host and tag in docker_image is an error', r.errors.some((f) => f.code === 'image-reference'));
+r = json(await c.callTool({ name: 'edgegap_validate_server_config', arguments: { docker_tag: 'Latest' } }));
+check('"Latest" in any case is flagged', r.errors.some((f) => f.code === 'latest-tag'));
 
 r = json(await c.callTool({ name: 'edgegap_validate_server_config', arguments: { netcode: 'mirror-kcp', ports: [{ port: 7777, protocol: 'TCP' }] } }));
 check('netcode/protocol mismatch is an error', r.errors.some((f) => f.code === 'netcode-protocol'));
@@ -262,6 +276,8 @@ check('API token sent as "token <value>"', calls.every((x) => x.auth === 'token 
 check('API token never in output', !text(res).includes('fake-api-token'));
 res = await c.callTool({ name: 'edgegap_get_registry_credentials', arguments: { tag: 'latest' } });
 check('rejects the "latest" tag', res.isError === true);
+res = await c.callTool({ name: 'edgegap_get_registry_credentials', arguments: { tag: ' LATEST ' } });
+check('rejects "latest" in any case or padding', res.isError === true && /Refused/.test(text(res)));
 
 check('next step tells the agent to list tags by image name only', /image_name "my-game-server", without the project/.test(r.next_step));
 tokenType = 'regular';
@@ -577,8 +593,67 @@ for (const [bad, why] of [
 // read-only mode lists the context tool and no dry-run write tools
 const ro2 = await connect({ EDGEGAP_READ_ONLY: '1' });
 r = json(await ro2.callTool({ name: 'edgegap_context', arguments: {} }));
+check('context reports the image, cap and secret env guardrails', typeof r.guardrails?.image_tags === 'string' && typeof r.guardrails?.deployment_cap === 'string' && typeof r.guardrails?.secret_env === 'string');
 check('context in read-only mode says so', r.read_only === true && /read-only/.test(r.guardrails.dry_run));
 await ro2.close();
+
+// ------------------------------------------------ 8. image tags ----
+console.log('\n8. no moving or malformed image tags');
+const ic = await connect({ EDGEGAP_API_TOKEN: REAL });
+const icall = (name, args) => ic.callTool({ name, arguments: args });
+const verUdp = { ...ver, ports: [{ port: 7777, protocol: 'UDP' }] };
+for (const [label, extra] of [
+  ['"latest"', { docker_tag: 'latest' }],
+  ['"Latest"', { docker_tag: 'Latest' }],
+  ['empty tag', { docker_tag: '' }],
+  ['tag with a space', { docker_tag: ' build-42' }],
+  ['tag starting with a dot', { docker_tag: '.b1' }],
+  ['host and tag inside docker_image', { docker_image: 'registry.edgegap.com/my-org-abc123/my-game-server:v2' }],
+  ['digest inside docker_image', { docker_image: 'me/srv@sha256:abc' }],
+]) {
+  calls.length = 0;
+  const out = await icall('edgegap_create_app_version', { ...verUdp, ...extra });
+  check(`create_app_version, ${label}: refused, nothing sent`, out.isError && /Refused/.test(text(out)) && calls.length === 0, text(out).slice(0, 140));
+}
+res = await icall('edgegap_create_app_version', { ...verUdp, docker_image: 'registry.edgegap.com/my-org-abc123/my-game-server:v2' });
+check('the refusal shows the three-field split', /docker_repository "registry\.edgegap\.com", docker_image "my-org-abc123\/my-game-server", docker_tag "v2"/.test(text(res)), text(res));
+res = await icall('edgegap_create_app_version', { ...verUdp, dry_run: true });
+check('a build tag still goes through', !res.isError);
+calls.length = 0;
+res = await icall('edgegap_deploy', { ...dep, version: 'latest-1' });
+check('deploying a version on "latest" is refused before the deploy call', res.isError && /latest/.test(text(res)) && !calls.some((x) => x.method === 'POST'), text(res).slice(0, 140));
+
+// --------------------------------------------- 9. agent deployment cap ----
+console.log('\n9. agent deployment cap');
+agentRunning = 5;
+calls.length = 0;
+res = await icall('edgegap_deploy', dep);
+const capQuery = JSON.parse(new URL(calls.find((x) => x.url.startsWith('/v1/deployments'))?.url ?? '/', 'http://x').searchParams.get('query') ?? '{}');
+check('5 running (the default cap): refused, nothing deployed', res.isError && /EDGEGAP_MAX_AGENT_DEPLOYMENTS/.test(text(res)) && !calls.some((x) => x.method === 'POST'), text(res).slice(0, 140));
+check('the count is of agent-tagged deployments', JSON.stringify(capQuery.filters) === JSON.stringify([{ field: 'tags', operator: 'in', value: ['edgegap-mcp', 'mcp'] }]), JSON.stringify(capQuery));
+check('the refusal says how to clean up', /only_agent_deployments/.test(text(res)) && /edgegap_stop_deployment/.test(text(res)));
+agentRunning = 4;
+r = json(await icall('edgegap_deploy', dep));
+check('4 running: deploys', r.request_id === '7e709a0d8efd');
+const nocap = await connect({ EDGEGAP_API_TOKEN: REAL, EDGEGAP_MAX_AGENT_DEPLOYMENTS: '0' });
+agentRunning = 50;
+calls.length = 0;
+r = json(await nocap.callTool({ name: 'edgegap_deploy', arguments: dep }));
+check('EDGEGAP_MAX_AGENT_DEPLOYMENTS=0: no cap, no count call', r.request_id === '7e709a0d8efd' && !calls.some((x) => x.url.startsWith('/v1/deployments')));
+await nocap.close();
+agentRunning = 0;
+
+// ------------------------------------------ 10. secret env vars hidden ----
+console.log('\n10. secret-looking env vars hidden in the dashboard');
+calls.length = 0;
+await icall('edgegap_create_app_version', { ...verUdp, env: [{ key: 'GAME_MODE', value: 'ffa' }, { key: 'STEAM_API_KEY', value: 'k' }, { key: 'db_password', value: 'p' }] });
+const envs = calls.find((x) => x.method === 'POST')?.body?.envs ?? [];
+check('create_app_version: GAME_MODE visible, STEAM_API_KEY and db_password hidden', envs.map((e) => e.is_hidden).join() === 'false,true,true', JSON.stringify(envs.map((e) => [e.key, e.is_hidden])));
+calls.length = 0;
+await icall('edgegap_deploy', { ...dep, env: [{ key: 'MATCH_ID', value: 'm' }, { key: 'JWT_SECRET', value: 's' }] });
+const depEnvs = calls.find((x) => x.method === 'POST')?.body?.environment_variables ?? [];
+check('deploy: MATCH_ID visible, JWT_SECRET hidden', depEnvs.map((e) => e.is_hidden).join() === 'false,true', JSON.stringify(depEnvs));
+await ic.close();
 
 // ------------------------------------------------- token prefix in env ----
 const dbl = await connect({ EDGEGAP_API_TOKEN: 'token token fake-api-token' });

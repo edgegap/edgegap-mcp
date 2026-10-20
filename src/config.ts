@@ -16,6 +16,8 @@ export interface Config {
   appAllowlist: string[];
   /** Ceiling on max_duration (minutes) the agent may request. */
   maxDurationCeiling: number;
+  /** Most agent-tagged deployments running at once before deploy refuses; 0 = no cap. */
+  maxAgentDeployments: number;
   /** Timeout for a single HTTP call, ms. */
   requestTimeoutMs: number;
   /** "local" for the stdio server, "hosted" for the Worker and HTTP server. */
@@ -98,6 +100,7 @@ export function loadConfig(
     readOnly: env.EDGEGAP_READ_ONLY === '1' || env.EDGEGAP_READ_ONLY === 'true',
     appAllowlist: parseList(env.EDGEGAP_APP_ALLOWLIST),
     maxDurationCeiling: parseIntEnv(env.EDGEGAP_MAX_DURATION_MINUTES, 60),
+    maxAgentDeployments: parseIntEnv(env.EDGEGAP_MAX_AGENT_DEPLOYMENTS, 5),
     requestTimeoutMs: parseIntEnv(env.EDGEGAP_TIMEOUT_MS, 30_000),
   };
 }
