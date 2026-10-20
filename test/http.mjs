@@ -61,6 +61,15 @@ r = await c.callTool({ name: 'edgegap_list_apps', arguments: {} });
 check('a foreign JWT is not relayed', r.isError && /does not contain an Edgegap/.test(text(r)) && calls.length === 0);
 await c.close();
 
+// Clients also mint plain opaque tokens, with no dots. Edgegap tokens are UUIDs,
+// so these are foreign too, and never relayed for a confusing 401.
+for (const header of ['Bearer mcp_at_9f8e7d6c5b4a39281706f5e4d3c2b1a0', 'Bearer 2YotnFZFEjr1zCsicMWpAA']) {
+  c = await connect(header);
+  r = await c.callTool({ name: 'edgegap_list_apps', arguments: {} });
+  check(`a foreign opaque token (${header.length - 7} chars) is not relayed`, r.isError && /does not contain an Edgegap/.test(text(r)) && calls.length === 0, text(r).slice(0, 160));
+  await c.close();
+}
+
 c = await connect(`token ${TOKEN}`);
 r = await c.callTool({ name: 'edgegap_list_apps', arguments: {} });
 check('a real token reaches the API as "token <value>"', !r.isError && calls.at(-1)?.auth === `token ${TOKEN}`, text(r).slice(0, 200));

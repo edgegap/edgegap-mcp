@@ -16,6 +16,9 @@ function check(label, cond, detail = '') {
 }
 
 const TOKEN = '0f8b3c1e-e458-4592-b607-c2c28afd8b62';
+// A token an MCP client minted for itself, with no dots: the looser check this
+// replaced took it for an Edgegap token and relayed it.
+const OPAQUE = 'mcp_at_9f8e7d6c5b4a39281706f5e4d3c2b1a0';
 const SECRET_IP = '203.0.113.77';
 const SECRET_ENV = 'env-value-must-not-leak';
 const SECRET_APP = 'secret-app-name';
@@ -93,6 +96,7 @@ try {
   await w.rpc('tools/call', { name: 'edgegap_context', arguments: {} }, auth);
   await w.rpc('tools/call', { name: 'edgegap_list_apps', arguments: {} });
   await w.rpc('tools/call', { name: 'edgegap_list_deployments', arguments: {} }, { Authorization: 'Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJjbGllbnQifQ.clientsig' });
+  await w.rpc('tools/call', { name: 'edgegap_get_registry_credentials', arguments: {} }, { Authorization: `Bearer ${OPAQUE}` });
   await settle();
 
   console.log('\nthe Worker still works');
@@ -125,12 +129,14 @@ try {
   check('no Authorization header: auth_problem "absent", recorded as an error', props(noHeader).auth_problem === 'absent' && props(noHeader).has_token === false && props(noHeader).$mcp_is_error === true, JSON.stringify(props(noHeader)));
   const foreign = of('$mcp_tool_call').find((e) => props(e).$mcp_tool_name === 'edgegap_list_deployments');
   check('client-issued bearer: auth_problem "foreign"', props(foreign).auth_problem === 'foreign' && props(foreign).has_token === false, JSON.stringify(props(foreign)));
+  const opaque = of('$mcp_tool_call').find((e) => props(e).$mcp_tool_name === 'edgegap_get_registry_credentials');
+  check('client-issued opaque (non-JWT) bearer: auth_problem "foreign"', props(opaque).auth_problem === 'foreign' && props(opaque).has_token === false, JSON.stringify(props(opaque)));
   check('calls with a token carry no auth_problem', withToken.every((e) => !('auth_problem' in props(e))));
   check('prompt reads carry auth_problem too', of('$mcp_prompt_get').some((e) => props(e).auth_problem === 'absent'));
 
   console.log('\nprivacy');
   const everything = raws.join('\n');
-  check('a foreign bearer is never sent', !everything.includes('eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJjbGllbnQifQ.clientsig'));
+  check('a foreign bearer is never sent', !everything.includes('eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJjbGllbnQifQ.clientsig') && !everything.includes(OPAQUE));
   check('the API token is never sent', !everything.includes(TOKEN) && !everything.includes(TOKEN.replace(/-/g, '')));
   check('tool argument values are never sent (IP, env value, app name)', !everything.includes(SECRET_IP) && !everything.includes(SECRET_ENV) && !everything.includes(SECRET_APP));
   check('no $mcp_parameters, $mcp_response or error text', events.every((e) => !('$mcp_parameters' in props(e)) && !('$mcp_response' in props(e)) && !('$mcp_error_message' in props(e))));

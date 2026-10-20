@@ -12,21 +12,25 @@ import { stripTokenPrefix } from './config.js';
 const TOKEN_URL = 'https://app.edgegap.com/user-settings?tab=tokens';
 
 /**
- * Edgegap API tokens are UUIDs. The strict form is the real test; the loose
- * form exists so a future token format does not silently stop working here.
+ * Edgegap API tokens are UUIDs: the dashboard issues one kind of token, and the
+ * API docs show it as "token xxxxxxxx-e458-4592-b607-c2c28afd8b62". Anything
+ * else in the header is not an Edgegap token.
  *
  * The point of this check is NOT security — an invalid token fails upstream
  * anyway. It is to tell a foreign credential apart from an Edgegap one BEFORE
  * relaying it, so the developer gets "your client sent its own token" instead
- * of Edgegap's generic 401. JWTs are the common case: they are what MCP clients
- * mint for themselves, and they always carry dots, which a UUID never does.
+ * of Edgegap's generic 401, and telemetry records auth_problem "foreign". MCP
+ * clients mint JWTs for themselves (dots, never in a UUID) but also plain
+ * opaque strings, which an earlier, looser check let through to the API.
+ *
+ * If Edgegap ever issues another token format, add it here: until then the
+ * hosted server refuses it as foreign. The stdio server (npx @edgegap/mcp)
+ * does not run this check.
  */
-const STRICT_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const LOOSE_OPAQUE = /^[A-Za-z0-9_-]{16,200}$/;
+const EDGEGAP_TOKEN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function looksLikeEdgegapToken(value: string): boolean {
-  if (STRICT_UUID.test(value)) return true;
-  return LOOSE_OPAQUE.test(value);
+  return EDGEGAP_TOKEN.test(value);
 }
 
 export type TokenResult =
@@ -59,9 +63,10 @@ export function unavailableMessage(problem: 'absent' | 'foreign'): string {
   if (problem === 'foreign') {
     return (
       'The Authorization header on this connection does not contain an Edgegap ' +
-      'API token — it looks like a credential your MCP client issued for ' +
-      'itself. That happens with clients that connect by URL alone and have no ' +
-      'field for a custom header. This server was not going to relay it to the ' +
+      'API token (those look like xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx) — it ' +
+      'looks like a credential your MCP client issued for itself. That ' +
+      'happens with clients that connect by URL alone and have no field for a ' +
+      'custom header. This server was not going to relay it to the ' +
       'Edgegap API, because the only thing that produces is a confusing 401.\n\n' +
       'If your client cannot attach your own Edgegap token to the connection, ' +
       'it cannot use this hosted server: run the local one instead ' +
