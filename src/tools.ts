@@ -1769,8 +1769,12 @@ export function registerTools(
           next_steps: [
             'Write config to matchmaker-config.json in the project.',
             `The developer uploads it in the dashboard (${DASHBOARD_URL}, Matchmaker page, Create Matchmaker) and waits for it to show as ready. The free tier runs on a shared test cluster for up to 3 hours per restart.`,
-            'The dashboard then shows the matchmaker API URL and auth token. Game clients call POST {api_url}/tickets ' +
-              `with header "Authorization: <auth token>" and profile "${args.profile_name}", then poll GET {api_url}/memberships/{id} until it returns the server address.`,
+            'The dashboard then shows the matchmaker API URL and auth token. Each game client calls POST {api_url}/tickets ' +
+              `with header "Authorization: <auth token>" and profile "${args.profile_name}", then polls GET {api_url}/tickets/{id} (same header) every few seconds. ` +
+              'The status goes SEARCHING, then MATCH_FOUND, then HOST_ASSIGNED; at HOST_ASSIGNED, connect to assignment.fqdn on the external port in assignment.ports (e.g. assignment.ports.gameport.external, keyed by the port name of the app version). ' +
+              'DELETE {api_url}/tickets/{id} cancels a search.',
+            'Parties that must land in the same match use the group API instead (POST {api_url}/groups, then memberships for the other players; see the matchmaker API docs on the dashboard). ' +
+              '/memberships endpoints belong to groups only: a plain ticket is polled at /tickets/{id}.',
             'That auth token is safe to ship in game clients: it grants no access to the Edgegap API.',
             args.allowed_cors_origins?.length
               ? `Browser clients are allowed from: ${args.allowed_cors_origins.join(', ')}. Add any other origin the game is served from (each staging or production URL) before uploading.`
