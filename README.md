@@ -157,7 +157,7 @@ To keep your API token on your own machine, run the server locally instead. Leav
 }
 ```
 
-Needs Node 18+. Pin a version in production (`@edgegap/mcp@0.5.7`) rather than floating on latest. Registered in the official MCP registry as `dev.edgegap/mcp`.
+Needs Node 18+. Pin a version in production (`@edgegap/mcp@0.5.8`) rather than floating on latest. Registered in the official MCP registry as `dev.edgegap/mcp`.
 
 The local server can also limit what an agent can do. These variables have no effect on the hosted endpoint at `mcp.edgegap.dev`:
 
@@ -180,6 +180,7 @@ The server includes the [Edgegap agent skills](https://github.com/edgegap/edgega
 | `edgegap-ngo` | Unity with Netcode for GameObjects end to end: server start and self-stop, Find Match panel, Boss Room adapter, matchmaker. |
 | `edgegap-fishnet` | Unity with FishNet end to end: headless server, Bayou/WebGL, matchmaker, end-to-end test. |
 | `edgegap-purrnet` | Unity with PurrNet end to end: dedicated server, connect panel, matchmaker, end-to-end test. |
+| `edgegap-fusion` | Unity with Photon Fusion 2 end to end: IL2CPP Linux server, server bound to 0.0.0.0, Edgegap deployment, BR200 kit. |
 | `edgegap-manus` | Browser games built with Manus: backend matchmaking, Steam sign-in, signed join tokens, Node WebSocket server. |
 | `edgegap-unreal` | Unreal Engine end to end: source engine, Linux server, matchmaker, end-to-end test. |
 | `edgegap-eos-voice` | Voice chat for an Unreal game on Edgegap with EOS Voice: server-side room tokens, match and team rooms. |
