@@ -157,7 +157,7 @@ To keep your API token on your own machine, run the server locally instead. Leav
 }
 ```
 
-Needs Node 18+. Pin a version in production (`@edgegap/mcp@0.5.8`) rather than floating on latest. Registered in the official MCP registry as `dev.edgegap/mcp`.
+Needs Node 18+. Pin a version in production (`@edgegap/mcp@0.6.1`) rather than floating on latest. Registered in the official MCP registry as `dev.edgegap/mcp`.
 
 The local server can also limit what an agent can do. These variables have no effect on the hosted endpoint at `mcp.edgegap.dev`:
 
@@ -167,6 +167,7 @@ The local server can also limit what an agent can do. These variables have no ef
 | `EDGEGAP_READ_ONLY` | `0` | Set to `1` and the eight mutating tools are never registered, so the agent cannot be talked into calling them. |
 | `EDGEGAP_APP_ALLOWLIST` | *(empty)* | Comma-separated application names. Limits what the agent can create and deploy into. Reading (listing apps and versions) is not limited, and neither is touching deployments once running. See [DESIGN.md](DESIGN.md#scope-of-the-allowlist). |
 | `EDGEGAP_MAX_DURATION_MINUTES` | `60` | Ceiling on `max_duration` the agent may set on a version. |
+| `EDGEGAP_MAX_AGENT_DEPLOYMENTS` | `5` | `edgegap_deploy` refuses while this many deployments tagged `edgegap-mcp` are running. `0` turns the cap off. |
 | `EDGEGAP_TIMEOUT_MS` | `30000` | Per-request HTTP timeout. |
 
 ## 📚 Skills
@@ -271,6 +272,10 @@ Your API token can do anything in your organization, so the server adds its own 
 | No token in containers | A deploy or version is refused, with nothing sent, if your API token appears in an env var name or value, a tag, or a webhook URL. Env values are never echoed back. |
 | Agent tag | Every deployment gets the `edgegap-mcp` tag, even when the agent passes its own tags. `edgegap_list_deployments` with `only_agent_deployments: true` finds them all. |
 | Auto-stop | Every deploy reports when Edgegap will stop it: the version's `max_duration`, capped at `EDGEGAP_MAX_DURATION_MINUTES` (default 60) for versions the agent creates. Edgegap has no per-deployment time limit, so a version made elsewhere can run up to its own limit (1440 minutes by default); the result warns when it is over an hour or unlimited. |
+| No moving image tags | `edgegap_create_app_version` refuses `latest` (any case), an empty tag, or a tag Docker would reject, with nothing sent: Edgegap caches images by tag, so a re-pushed tag can deploy a stale build. Deploying an existing version on `latest` is refused too, and so is asking for registry push commands for `latest`. |
+| Image reference check | A `docker_image` that also holds a registry host, tag or digest (e.g. `registry.edgegap.com/proj/server:v2`) is refused, and the error gives the right `docker_repository` / `docker_image` / `docker_tag` split. `edgegap_validate_server_config` flags the same things. |
+| Deployment cap | `edgegap_deploy` is refused while `EDGEGAP_MAX_AGENT_DEPLOYMENTS` (default 5) deployments tagged `edgegap-mcp` are already running, so a looping agent cannot pile up billing servers. The refusal says how to list and stop them. |
+| Hidden secret env vars | Env vars whose names look like secrets (`TOKEN`, `SECRET`, `PASSWORD`, `API_KEY`, `CREDENTIAL`, `AUTH`…) are sent with `is_hidden`, so the dashboard does not show their values in plain text. |
 | Strict stop | `edgegap_stop_deployment` stops one deployment by its exact request ID. Empty IDs, wildcards and lists are refused. There is no bulk stop. |
 | Host on every result | Every result starts with the API host, e.g. `[api.edgegap.com]`, or `[custom · host]` when `EDGEGAP_BASE_URL` points elsewhere. A base URL naming `api.edgegap.com` must be exactly `https://api.edgegap.com`, or the server refuses to start. |
 | Redaction | The token is stripped from every error before it reaches the agent. |
@@ -319,7 +324,7 @@ docker build -t edgegap-mcp .
 docker run --rm -p 8080:8080 edgegap-mcp
 ```
 
-Clients connect to `http://<host>:8080/mcp` with their own `Authorization` header, the same way they connect to the hosted endpoint. The image holds no credential, and `/health` answers without one. `PORT`, `HOST`, `EDGEGAP_READ_ONLY`, `EDGEGAP_APP_ALLOWLIST` and `EDGEGAP_MAX_DURATION_MINUTES` apply. Read [worker/DECISION.md](worker/DECISION.md) before exposing it beyond a private network.
+Clients connect to `http://<host>:8080/mcp` with their own `Authorization` header, the same way they connect to the hosted endpoint. The image holds no credential, and `/health` answers without one. `PORT`, `HOST`, `EDGEGAP_READ_ONLY`, `EDGEGAP_APP_ALLOWLIST`, `EDGEGAP_MAX_DURATION_MINUTES` and `EDGEGAP_MAX_AGENT_DEPLOYMENTS` apply. Read [worker/DECISION.md](worker/DECISION.md) before exposing it beyond a private network.
 
 Prebuilt images are published to `ghcr.io/edgegap/edgegap-mcp`, tagged `main` and `sha-<commit>` on every push to `main`, plus the version on `v*` tags:
 

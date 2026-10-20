@@ -13,6 +13,8 @@
  * enforces on app versions.
  */
 
+import { badImage, badTag } from './image.js';
+
 export type Engine = 'unity' | 'unreal' | 'godot' | 'other';
 
 export const PROTOCOLS = ['UDP', 'TCP', 'TCP/UDP', 'HTTP', 'HTTPS', 'WS', 'WSS'] as const;
@@ -322,9 +324,16 @@ export function validateServerConfig(input: ServerConfigInput) {
   }
 
   // ----------------------------------------------------------------- Image --
-  if (input.docker_tag !== undefined && (input.docker_tag === '' || input.docker_tag === 'latest')) {
-    err('latest-tag', `docker_tag "${input.docker_tag || '(empty)'}" is not reproducible, and Edgegap caches images by tag, so a re-pushed "latest" can deploy a stale build.`,
+  // Same rules edgegap_create_app_version enforces, so the validator never
+  // passes a version that the create tool then refuses.
+  const tagProblem = input.docker_tag === undefined ? undefined : badTag(input.docker_tag);
+  if (tagProblem) {
+    err('latest-tag', `${tagProblem}. Edgegap caches images by tag, so a re-pushed tag can deploy a stale build.`,
       'Tag every build uniquely, e.g. a build ID or timestamp.');
+  }
+  const imageProblem = input.docker_image === undefined ? undefined : badImage(input.docker_repository ?? '', input.docker_image);
+  if (imageProblem) {
+    err('image-reference', imageProblem, 'docker_image is the path only; the registry and tag have their own fields.');
   }
   if (input.docker_repository?.includes('registry.edgegap.com') && input.docker_image && !input.docker_image.includes('/')) {
     err('missing-project', `docker_image "${input.docker_image}" has no project prefix. Images on registry.edgegap.com live under your project.`,

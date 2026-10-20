@@ -47,6 +47,7 @@ import { createAnalytics, type TelemetryEnv } from './telemetry.js';
 export interface Env extends TelemetryEnv {
   EDGEGAP_APP_ALLOWLIST?: string;
   EDGEGAP_MAX_DURATION_MINUTES?: string;
+  EDGEGAP_MAX_AGENT_DEPLOYMENTS?: string;
   EDGEGAP_READ_ONLY?: string;
 }
 
@@ -66,6 +67,7 @@ function configForRequest(env: Env): Config {
       .map((s) => s.trim())
       .filter(Boolean),
     maxDurationCeiling: Number.parseInt(env.EDGEGAP_MAX_DURATION_MINUTES ?? '60', 10) || 60,
+    maxAgentDeployments: Number.parseInt(env.EDGEGAP_MAX_AGENT_DEPLOYMENTS ?? '5', 10) || 5,
     requestTimeoutMs: 25_000, // inside the Worker subrequest budget
     transport: 'hosted',
   };
