@@ -21,6 +21,7 @@ import {
 } from './serverconfig.js';
 import { generateDockerfile, DockerfileInputError } from './dockerfile.js';
 import { buildMatchmakerConfig, DASHBOARD_URL } from './matchmaker.js';
+import { badImage, badTag, looksSecret, TAG_FIX } from './image.js';
 import { SKILLS_PACK, findSkill, findSkillFile, fileIndex, mimeType, skillUri } from './skills.js';
 
 /**
@@ -442,7 +443,7 @@ export function registerTools(
       description:
         'Report which Edgegap API this server talks to, its version, whether it is the local or ' +
         'hosted server, and the guardrails in force: read-only mode, application allowlist, ' +
-        'max_duration ceiling, the tag forced onto every deployment, and which tools support ' +
+        'max_duration ceiling, the agent deployment cap, the tag forced onto every deployment, and which tools support ' +
         'dry_run. Call it first when unsure what this session is allowed to do, or before ' +
         'anything billable. Makes no API call and never shows the token.',
       inputSchema: {},
@@ -468,6 +469,7 @@ export function registerTools(
         read_only: config.readOnly,
         app_allowlist: config.appAllowlist.length ? config.appAllowlist : 'none (all applications)',
         max_duration_ceiling_minutes: config.maxDurationCeiling,
+        max_agent_deployments: config.maxAgentDeployments > 0 ? config.maxAgentDeployments : 'no cap',
         skills_pack: `${SKILLS_PACK.version} (${SKILLS_PACK.commit.slice(0, 7)}), ${SKILLS_PACK.skills.length} skills`,
         forced_deploy_tag: AGENT_TAG,
         guardrails: {
@@ -475,6 +477,11 @@ export function registerTools(
             ? 'deploy, stop_deployment, create_app, create_app_version, create/authorize/delete relay'
             : 'n/a: read-only, no write tools are registered',
           token_in_container: 'deploys and versions are refused if the API token appears in an env var, tag or webhook URL',
+          image_tags: 'versions on "latest", an empty or malformed tag, or a docker_image holding a registry or tag are refused; so is deploying a version on "latest"',
+          deployment_cap: config.maxAgentDeployments > 0
+            ? `deploy is refused while ${config.maxAgentDeployments} or more agent-tagged deployments are running`
+            : 'off (EDGEGAP_MAX_AGENT_DEPLOYMENTS=0)',
+          secret_env: 'env vars named like secrets (TOKEN, SECRET, PASSWORD, API_KEY...) are sent hidden',
           stop: 'one exact request_id per call; no bulk stop',
           auto_stop: 'each deploy reports its version\'s max_duration; Edgegap has no per-deployment time limit',
           results: `every result starts with [${label}]`,
@@ -605,7 +612,9 @@ export function registerTools(
           'edgegap_get_registry_credentials and edgegap_list_registry_tags). Resource units: 1024 cpu ' +
           'units = 1 vCPU; memory_mb must be at least 256 and at most double the cpu units. ' +
           'Set verify_image true on the first version so a bad image fails here rather than at ' +
-          'deploy time. Avoid the "latest" docker tag — use a build ID so deployments are reproducible.',
+          'deploy time. Refused, with nothing sent, for the "latest" or an empty docker tag (use a build ID so ' +
+          'deployments are reproducible) and for a docker_image that also holds a registry host or tag. ' +
+          'Env vars named like secrets (TOKEN, SECRET, PASSWORD, API_KEY…) are hidden in the dashboard.',
         inputSchema: {
           application: z.string().describe('Existing application name.'),
           name: z
@@ -617,7 +626,7 @@ export function registerTools(
             .string()
             .describe('Registry host, e.g. "docker.io" or "registry.edgegap.com".'),
           docker_image: z.string().describe('Namespaced image, e.g. "mystudio/game-server".'),
-          docker_tag: z.string().describe('Image tag. Use a build ID, not "latest".'),
+          docker_tag: z.string().describe('Image tag: a build ID, commit SHA or timestamp. "latest" and empty tags are refused.'),
           cpu_units: z.number().int().min(256).describe('vCPU units. 1024 = 1 vCPU.'),
           memory_mb: z.number().int().min(256).describe('Memory in MB. At most 2x cpu_units.'),
           ports: z
@@ -683,6 +692,11 @@ export function registerTools(
           ]);
           if (leak) return leak;
 
+          const tagProblem = badTag(args.docker_tag);
+          if (tagProblem) return fail(`Refused: ${tagProblem}. ${TAG_FIX}`);
+          const imageProblem = badImage(args.docker_repository, args.docker_image);
+          if (imageProblem) return fail(`Refused: ${imageProblem}`);
+
           if (args.memory_mb > args.cpu_units * 2) {
             return fail(
               `memory_mb (${args.memory_mb}) exceeds twice cpu_units (${args.cpu_units}). ` +
@@ -722,7 +736,7 @@ export function registerTools(
               to_check: p.to_check ?? true,
               tls_upgrade: p.tls_upgrade ?? false,
             })),
-            envs: args.env?.map((e) => ({ key: e.key, value: e.value, is_hidden: false })),
+            envs: args.env?.map((e) => ({ key: e.key, value: e.value, is_hidden: looksSecret(e.key) })),
           };
 
           if (args.dry_run) {
@@ -788,7 +802,9 @@ export function registerTools(
           `Every deployment is tagged "${AGENT_TAG}" in addition to any tags you pass, so ` +
           'edgegap_list_deployments with only_agent_deployments: true finds them all. Runs until ' +
           'stopped or until the version\'s max_duration, which the result reports. Refused, with ' +
-          'nothing sent, if the API token appears in an env var or tag.',
+          'nothing sent, if the API token appears in an env var or tag, if the version uses the "latest" ' +
+          'docker tag, or when too many agent deployments are already running (EDGEGAP_MAX_AGENT_DEPLOYMENTS, ' +
+          'default 5): stop finished ones first. Env vars named like secrets are hidden in the dashboard.',
         inputSchema: {
           application: z.string().describe('Application name.'),
           version: z.string().describe('Version name within the application.'),
@@ -842,7 +858,7 @@ export function registerTools(
             body.environment_variables = args.env.map((e) => ({
               key: e.key,
               value: e.value,
-              is_hidden: false,
+              is_hidden: looksSecret(e.key),
             }));
           }
           if (args.cpu_units && args.memory_mb) {
@@ -863,6 +879,31 @@ export function registerTools(
           // a full day). Read it first so the agent knows how long an
           // unstopped test server will keep billing.
           const version = await client.getAppVersion(args.application, args.version);
+          if (version.docker_tag !== undefined && badTag(version.docker_tag)) {
+            return fail(
+              `Refused: version "${args.version}" uses docker_tag "${version.docker_tag}". ${TAG_FIX} ` +
+                'Then create a new version with edgegap_create_app_version and deploy that.'
+            );
+          }
+
+          // A looping agent can start servers faster than anyone notices the
+          // bill. Count the ones it already has running before adding one.
+          if (config.maxAgentDeployments > 0) {
+            const running = await client.listDeployments({
+              query: JSON.stringify({ filters: [{ field: 'tags', operator: 'in', value: [AGENT_TAG, 'mcp'] }] }),
+              limit: 1,
+            });
+            const count = running.total_count ?? running.data?.length ?? 0;
+            if (count >= config.maxAgentDeployments) {
+              return fail(
+                `Refused: ${count} deployments started through this server are still running, and the limit ` +
+                  `is ${config.maxAgentDeployments} (EDGEGAP_MAX_AGENT_DEPLOYMENTS). List them with ` +
+                  'edgegap_list_deployments only_agent_deployments: true and stop the ones you are done with ' +
+                  'using edgegap_stop_deployment, then deploy again.'
+              );
+            }
+          }
+
           const res = await client.deploy(body);
           return ok({
             request_id: res.request_id,
@@ -1332,9 +1373,8 @@ export function registerTools(
       },
       async ({ image_name, tag }) =>
         guard(auth, async () => {
-          if (tag === 'latest') {
-            return fail('Do not use the "latest" tag: Edgegap caches by tag, so a re-pushed "latest" can deploy a stale build. Pass a build ID or timestamp.');
-          }
+          const tagProblem = tag === undefined ? undefined : badTag(tag);
+          if (tagProblem) return fail(`Refused: ${tagProblem}. ${TAG_FIX}`);
 
           // Both wizard endpoints answer 403 to a regular API token: they belong
           // to the plugins' quick-start flow. 403 is the token type, not a
