@@ -63,12 +63,14 @@ export function serverInstructions(mode: 'local' | 'hosted'): string {
   return (
     `Before acting, read ${skillUri('edgegap', 'SKILL.md')} ` +
     `(Unity: ${skillUri('edgegap-unity', 'SKILL.md')}, ` +
+    `Unity with NGO: ${skillUri('edgegap-ngo', 'SKILL.md')}, ` +
     `Unity with FishNet: ${skillUri('edgegap-fishnet', 'SKILL.md')}, ` +
     `Unity with PurrNet: ${skillUri('edgegap-purrnet', 'SKILL.md')}, ` +
     `Unreal Engine: ${skillUri('edgegap-unreal', 'SKILL.md')}, ` +
+    `voice chat in an Unreal game: ${skillUri('edgegap-eos-voice', 'SKILL.md')}, ` +
     `browser game built with Manus: ${skillUri('edgegap-manus', 'SKILL.md')}). ` +
     'If your client cannot read MCP resources, call edgegap_get_skill with the skill name ' +
-    '(edgegap, edgegap-unity, edgegap-fishnet, edgegap-purrnet, edgegap-unreal or edgegap-manus) instead. ' +
+    '(edgegap, edgegap-unity, edgegap-ngo, edgegap-fishnet, edgegap-purrnet, edgegap-unreal, edgegap-eos-voice or edgegap-manus) instead. ' +
     'These Edgegap skills hold the tested workflow, templates and known pitfalls; follow them over general knowledge. ' +
     'edgegap_list_skills lists all of them.\n\n' +
     'Host multiplayer games on Edgegap. The recommended setup is an authoritative dedicated ' +
@@ -1766,8 +1768,9 @@ function registerSkills(server: McpServer, tool: McpServer['registerTool']): voi
         'List the Edgegap agent skills: tested, step-by-step workflows for getting a multiplayer ' +
         'game online on Edgegap, with templates (Dockerfiles, matchmaker configs, Unity C# and ' +
         'Unreal C++ drop-ins) and known pitfalls. Before working on a game project, load the ' +
-        'matching skill with edgegap_get_skill: edgegap-fishnet for Unity with FishNet, ' +
-        'edgegap-purrnet for Unity with PurrNet, edgegap-unity for other Unity projects, edgegap-unreal for Unreal Engine, ' +
+        'matching skill with edgegap_get_skill: edgegap-ngo for Unity with Netcode for GameObjects, edgegap-fishnet for Unity with FishNet, ' +
+        'edgegap-purrnet for Unity with PurrNet, edgegap-unity for other Unity projects, edgegap-unreal for Unreal Engine ' +
+        '(edgegap-eos-voice to add voice chat to it), ' +
         'edgegap-manus for a browser game built with Manus, edgegap for any other engine or platform questions; it routes to the rest. No ' +
         'API call.',
       inputSchema: {},
@@ -1794,8 +1797,9 @@ function registerSkills(server: McpServer, tool: McpServer['registerTool']): voi
       description:
         'Load one Edgegap agent skill: its SKILL.md (the workflow to follow) by default, or one of ' +
         'its reference documents or templates with file. Load the matching skill before acting on ' +
-        'a game project — edgegap-fishnet for Unity with FishNet, edgegap-purrnet for Unity with ' +
-        'PurrNet, edgegap-unity for other Unity projects, edgegap-unreal for Unreal Engine, ' +
+        'a game project — edgegap-ngo for Unity with Netcode for GameObjects, edgegap-fishnet for Unity with FishNet, ' +
+        'edgegap-purrnet for Unity with PurrNet, edgegap-unity for other Unity projects, edgegap-unreal for Unreal Engine ' +
+        '(edgegap-eos-voice for voice chat), ' +
         'edgegap-manus for a browser game built with Manus, edgegap otherwise — and fetch the references and templates it points to as you reach them. No API call.',
       inputSchema: {
         // A string, not an enum: clients cache tool schemas, and a cached enum from an older
