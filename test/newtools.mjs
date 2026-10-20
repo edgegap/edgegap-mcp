@@ -370,6 +370,13 @@ r = json(await c.callTool({ name: 'edgegap_build_matchmaker_config', arguments: 
 check('allowed_cors_origins lands in the config', JSON.stringify(r.config?.allowed_cors_origins) === JSON.stringify(['https://mygame.example.com', 'http://localhost:8080']));
 check('allowed origins are repeated in next_steps', r.next_steps?.some((s) => s.includes('http://localhost:8080')));
 r = json(await c.callTool({ name: 'edgegap_build_matchmaker_config', arguments: mm }));
+{
+  const steps = r.next_steps?.join(' ') ?? '';
+  const ticketStep = r.next_steps?.find((s) => s.includes('POST {api_url}/tickets')) ?? '';
+  check('next_steps: poll GET /tickets/{id} after POST /tickets, not /memberships', /GET \{api_url\}\/tickets\/\{id\}/.test(ticketStep) && !/memberships/.test(ticketStep), ticketStep);
+  check('next_steps: ticket statuses and assignment fields', /SEARCHING/.test(ticketStep) && /HOST_ASSIGNED/.test(ticketStep) && /assignment\.fqdn/.test(ticketStep) && /assignment\.ports\.gameport\.external/.test(ticketStep));
+  check('next_steps: groups named as the party alternative', /POST \{api_url\}\/groups/.test(steps));
+}
 check('no origins: key left out, WebGL reminder in next_steps', r.config?.allowed_cors_origins === undefined && r.next_steps?.some((s) => /WebGL/.test(s) && /allowed_cors_origins/.test(s)));
 res = await c.callTool({ name: 'edgegap_build_matchmaker_config', arguments: { ...mm, allowed_cors_origins: ['https://mygame.example.com/play/'] } });
 check('an origin with a path is refused', res.isError && /not an origin/.test(text(res)));
