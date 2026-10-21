@@ -1,0 +1,42 @@
+name: Bug report
+description: A tool did the wrong thing, failed, or gave the agent bad guidance.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Never paste your Edgegap API token, registry token or env var values. For anything that could expose a token, use **Security → Report a vulnerability** instead.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: '`edgegap_context` reports it, e.g. "@edgegap/mcp 0.7.0".'
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where it runs
+      options:
+        - Hosted (mcp.edgegap.dev)
+        - Local (npx @edgegap/mcp)
+        - Docker image
+    validations:
+      required: true
+  - type: input
+    id: client
+    attributes:
+      label: MCP client
+      description: e.g. Claude Code, Claude Desktop, claude.ai connector, Cursor, Codex.
+  - type: input
+    id: tool
+    attributes:
+      label: Tool
+      description: e.g. edgegap_deploy.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+      description: Include the tool's result, with any secrets removed. A dry_run result shows the exact request with secrets already masked.
+    validations:
+      required: true
