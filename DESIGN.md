@@ -199,8 +199,14 @@ the API rejects. The field and operator lists come from the
 ## Scope
 
 Not exposed, on purpose: private fleets, smart fleets, endpoint storage,
-ACL/whitelist entries, deployment tags, metrics, registry tag deletion, DNS
-configuration, and matchmaker lifecycle (start, stop, delete).
+ACL/whitelist entries, deployment tags, DNS configuration, deleting apps or
+versions, and matchmaker lifecycle (start, stop, delete).
+
+Moved into scope in 0.7.0, because agents reach them while sizing and cleaning
+up a first game: deployment metrics, locations and ping beacons, updating a
+version or turning an app off, listing relay sessions and removing a relay
+player, and deleting one registry tag. Tag deletion follows the stop rule: one
+exact tag per call, no wildcards, no bulk delete.
 
 These belong to studios already operating on the platform, not to a developer
 getting a first game online. Dockerfile generation and validation, registry

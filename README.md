@@ -157,7 +157,7 @@ To keep your API token on your own machine, run the server locally instead. Leav
 }
 ```
 
-Needs Node 18+. Pin a version in production (`@edgegap/mcp@0.6.3`) rather than floating on latest. Registered in the official MCP registry as `dev.edgegap/mcp`.
+Needs Node 18+. Pin a version in production (`@edgegap/mcp@0.7.0`) rather than floating on latest. Registered in the official MCP registry as `dev.edgegap/mcp`.
 
 The local server can also limit what an agent can do. These variables have no effect on the hosted endpoint at `mcp.edgegap.dev`:
 
@@ -216,6 +216,7 @@ Your agent picks the right tool from your request. You don't need to name them, 
 | `edgegap_validate_server_config` | Checks an existing Dockerfile, ports, resources, and image tag before you build. Catches ARM or Windows images (Edgegap runs `linux/amd64`), Unreal servers running as root, missing Unity `-batchmode -nographics`, servers bound to `localhost`, ports that don't match your netcode transport, and the `latest` tag. |
 | `edgegap_get_registry_credentials` ● | Returns push credentials for your private Edgegap container registry, with the exact `docker login`, build, and push commands. Edgegap only gives these to the Unity/Unreal plugins' quick-start token; with a regular API token, it tells your agent to ask you for the login from the dashboard's **Container Registry** page instead. |
 | `edgegap_list_registry_tags` | Confirms your image push landed before you register it. Takes the image name only, e.g. `my-game-server`: the project comes from your token. |
+| `edgegap_delete_registry_tag` ● | Deletes one tag, and the image it points to, to clean up old builds. One exact tag per call; `latest`, wildcards and lists are refused. |
 
 ### Dedicated Servers (Recommended)
 
@@ -223,13 +224,19 @@ Your agent picks the right tool from your request. You don't need to name them, 
 | --- | --- |
 | `edgegap_list_apps` | Lists your applications. |
 | `edgegap_create_app` ● | Creates an application. |
+| `edgegap_update_app` ● | Turns an application on or off for new deployments. |
 | `edgegap_list_app_versions` | Lists versions with their image, resources, ports (with TLS Upgrade), and whether a registry login is set. |
+| `edgegap_get_app_version` | Reads one version in full: image, resources, ports, max duration, image caching, restart policy, and env var names (never values). |
 | `edgegap_create_app_version` ● | Registers a container image as a deployable version. Supports TLS Upgrade on WS and HTTP ports, which browser (WebGL) clients need for `wss://`. |
+| `edgegap_update_app_version` ● | Changes an existing version: a new image tag, on/off, max duration, registry login, image caching (`force_cache`), shutdown grace period. Only the fields passed change; running deployments keep the old settings. |
+| `edgegap_list_locations` | Lists the cities Edgegap deploys to, or, for one version, only those with capacity right now. |
+| `edgegap_list_ping_beacons` | Lists the ping beacons game clients measure latency against before matchmaking. |
 | `edgegap_deploy` ● | Deploys an authoritative dedicated server close to your players. Always tagged `edgegap-mcp`, and reports when Edgegap will stop it. |
 | `edgegap_wait_for_deployment` | Waits until the server is ready and returns the connection address. |
 | `edgegap_get_deployment` | Reads a deployment's status. |
 | `edgegap_list_deployments` | Lists running deployments, filtered by application, version, status, tags and more, and sorted by age. Finds servers left running; `only_agent_deployments: true` lists every one an agent started. See [Filter Deployments](https://docs.edgegap.com/learn/orchestration/deployments#filter-deployments). |
 | `edgegap_get_deployment_logs` | Reads container logs and crash details while the deployment runs. After it stops, logs are only kept if Endpoint Storage was set up. |
+| `edgegap_get_deployment_metrics` | Summarises CPU, CPU throttling, memory and network use (latest, average, peak), to size a version or check a crash. |
 | `edgegap_stop_deployment` ● | Stops one deployment, by its exact request ID. No bulk stop. |
 
 ### Matchmaking
@@ -248,7 +255,9 @@ A relay is not a game server: it forwards traffic while one player's game hosts 
 | --- | --- |
 | `edgegap_create_relay_session` ● | Creates a relay session for your players and returns the relay address and each player's authorization token. |
 | `edgegap_get_relay_session` | Reads a relay session. |
+| `edgegap_list_relay_sessions` | Lists open relay sessions, to find ones left running. No authorization tokens. |
 | `edgegap_authorize_relay_user` ● | Adds a player who joins later. |
+| `edgegap_revoke_relay_user` ● | Removes one player from a relay session. |
 | `edgegap_delete_relay_session` ● | Closes a relay session. |
 
 > [!WARNING]

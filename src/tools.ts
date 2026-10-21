@@ -10,7 +10,7 @@
 
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { EdgegapClient, EdgegapApiError, DeploymentStatus, RelaySession, PlannedRequest } from './client.js';
+import { EdgegapClient, EdgegapApiError, DeploymentStatus, RelaySession, PlannedRequest, AppVersionRecord, MetricSeries } from './client.js';
 import { Config, assertAppAllowed, redact, hostLabel } from './config.js';
 import { VERSION } from './version.js';
 import { TokenSource, TokenUnavailableError } from './auth.js';
@@ -284,6 +284,53 @@ function compactDeployment(d: DeploymentStatus) {
   };
 }
 
+/** The version fields every version tool shows. Never the registry token. */
+function compactVersion(v: AppVersionRecord) {
+  return {
+    name: v.name,
+    active: v.is_active,
+    image: [v.docker_repository, v.docker_image, v.docker_tag].filter(Boolean).join('/'),
+    // Whether a login is set, never the login itself: the API returns the
+    // registry token in version responses.
+    registry_credentials_set: Boolean(v.private_username && v.private_token),
+    cpu_units: v.req_cpu,
+    memory_mb: v.req_memory,
+    max_duration_minutes: v.max_duration,
+    ports: v.ports?.map((p) => ({
+      name: p.name,
+      port: p.port,
+      protocol: p.protocol,
+      tls_upgrade: p.tls_upgrade ?? false,
+    })),
+  };
+}
+
+/** Reduces "registry.edgegap.com/<project>/img:tag" to the image path the
+ *  registry endpoints take. The project is stripped later only on a 404,
+ *  because nested image names are valid. */
+function imageNameOnly(input: string): string {
+  const parts = input.trim().replace(/@sha256:.*$/, '').split('/');
+  if (parts.length > 1 && /[.:]/.test(parts[0])) parts.shift();
+  parts[parts.length - 1] = parts[parts.length - 1].replace(/:[^:]*$/, '');
+  return parts.join('/');
+}
+
+/** Latest, average and peak of one metrics series, plus its labels. */
+function summarizeSeries(series: MetricSeries | undefined) {
+  const values = (series?.datasets ?? []).filter((x): x is number => typeof x === 'number' && Number.isFinite(x));
+  if (values.length === 0) return undefined;
+  const round = (x: number) => Math.round(x * 100) / 100;
+  return {
+    latest: round(values[values.length - 1]),
+    average: round(values.reduce((a, b) => a + b, 0) / values.length),
+    peak: round(Math.max(...values)),
+    samples: values.length,
+    labels: series?.labels?.length ? [...new Set(series.labels)].slice(0, 5) : undefined,
+    from: series?.timestamps?.[0],
+    to: series?.timestamps?.[series.timestamps.length - 1],
+  };
+}
+
 const userSchema = z
   .object({
     ip_addresses: z
@@ -479,7 +526,7 @@ export function registerTools(
         forced_deploy_tag: AGENT_TAG,
         guardrails: {
           dry_run: mutating
-            ? 'deploy, stop_deployment, create_app, create_app_version, create/authorize/delete relay'
+            ? 'deploy, stop_deployment, create_app, update_app, create_app_version, update_app_version, delete_registry_tag, create/authorize/revoke/delete relay'
             : 'n/a: read-only, no write tools are registered',
           token_in_container: 'deploys and versions are refused if the API token appears in an env var, tag or webhook URL',
           image_tags: 'versions on "latest", an empty or malformed tag, or a docker_image holding a registry or tag are refused; so is deploying a version on "latest"',
@@ -563,6 +610,38 @@ export function registerTools(
     );
   }
 
+  // --------------------------------------------------------------- 2b ----
+  if (mutating) {
+    tool(
+      'edgegap_update_app',
+      {
+        title: 'Turn an application on or off',
+        description:
+          'Set whether an application accepts new deployments. Turning it off stops new ' +
+          'deployments of every version under it; running deployments keep running. Use it to ' +
+          'pause an application without deleting anything.',
+        inputSchema: {
+          application: z.string().describe('Application name.'),
+          is_active: z.boolean().describe('false blocks new deployments; true allows them again.'),
+          dry_run: dryRunParam,
+        },
+        annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      },
+      async ({ application, is_active, dry_run }) =>
+        guarded(auth, NOT_FOUND.app, async () => {
+          assertAppAllowed(config, application);
+          const body = { is_active };
+          if (dry_run) {
+            const dry = client.dryRun();
+            await dry.client.updateApp(application, body);
+            return dryRunResult(dry.requests);
+          }
+          const res = await client.updateApp(application, body);
+          return ok({ application: res.name ?? application, active: res.is_active ?? is_active });
+        })
+    );
+  }
+
   // ---------------------------------------------------------------- 3 ----
   tool(
     'edgegap_list_app_versions',
@@ -584,24 +663,42 @@ export function registerTools(
       // limits what the agent can create and deploy into, as documented.
       guarded(auth, NOT_FOUND.app, async () => {
         const res = await client.listAppVersions(application);
-        const versions = (res.versions ?? []).map((v) => ({
-          name: v.name,
-          active: v.is_active,
-          image: [v.docker_repository, v.docker_image, v.docker_tag].filter(Boolean).join('/'),
-          // Whether a login is set, never the login itself: the API returns
-          // the registry token in this response.
-          registry_credentials_set: Boolean(v.private_username && v.private_token),
-          cpu_units: v.req_cpu,
-          memory_mb: v.req_memory,
-          max_duration_minutes: v.max_duration,
-          ports: v.ports?.map((p) => ({
-            name: p.name,
-            port: p.port,
-            protocol: p.protocol,
-            tls_upgrade: p.tls_upgrade ?? false,
-          })),
-        }));
+        const versions = (res.versions ?? []).map(compactVersion);
         return ok({ application, ...pageInfo(res.total_count, versions.length, 1), versions });
+      })
+  );
+
+  // --------------------------------------------------------------- 3b ----
+  tool(
+    'edgegap_get_app_version',
+    {
+      title: 'Get one application version',
+      description:
+        'Read one version in full: image, resources, ports, max_duration, whether image caching ' +
+        '(force_cache) and verify_image are on, restart policy, and the names of its env vars ' +
+        '(values are never shown). Use it before edgegap_update_app_version or edgegap_deploy ' +
+        'to check what a version will do.',
+      inputSchema: {
+        application: z.string().describe('Application name.'),
+        version: z.string().describe('Version name, as listed by edgegap_list_app_versions.'),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async ({ application, version }) =>
+      guarded(auth, NOT_FOUND.app, async () => {
+        const v = await client.getAppVersion(application, version);
+        return ok({
+          application,
+          ...compactVersion(v),
+          force_cache: v.force_cache,
+          caching_percent: v.caching_percent,
+          verify_image: v.verify_image,
+          restart_policy: v.restart_policy,
+          termination_grace_period_seconds: v.termination_grace_period_seconds,
+          time_to_deploy_seconds: v.time_to_deploy,
+          env: v.envs?.map((e) => ({ key: e.key, hidden: e.is_hidden ?? false })),
+          ...autoStop(v.max_duration),
+        });
       })
   );
 
@@ -791,6 +888,179 @@ export function registerTools(
         })
     );
   }
+
+  // --------------------------------------------------------------- 4b ----
+  if (mutating) {
+    tool(
+      'edgegap_update_app_version',
+      {
+        title: 'Update an application version',
+        description:
+          'Change settings on an existing version instead of creating a new one: point it at a new ' +
+          'image tag, turn it on or off, change max_duration, set the registry login, turn on image ' +
+          'caching (force_cache: Edgegap pre-loads the image so deployments start faster), or set ' +
+          'the shutdown grace period. Only the fields you pass change. Deployments already running ' +
+          'keep their old settings; new deployments get the new ones. Same refusals as ' +
+          'edgegap_create_app_version: "latest" or empty tags, a docker_image holding a host or ' +
+          'tag, and the API token in the registry login. Resources, ports and env vars cannot be ' +
+          'changed here; create a new version for those.',
+        inputSchema: {
+          application: z.string().describe('Application name.'),
+          version: z.string().describe('Version name to change.'),
+          is_active: z.boolean().optional().describe('false blocks new deployments of this version.'),
+          docker_repository: z.string().optional().describe('Registry host, e.g. "registry.edgegap.com".'),
+          docker_image: z.string().optional().describe('Image path, e.g. "my-org-abc123/my-game-server".'),
+          docker_tag: z.string().optional().describe('New image tag: a build ID, commit SHA or timestamp.'),
+          registry_username: z.string().optional(),
+          registry_token: z.string().optional().describe('Registry password or token. Never echoed back.'),
+          max_duration_minutes: z
+            .number()
+            .int()
+            .optional()
+            .describe('Auto-stop after this many minutes. Capped by EDGEGAP_MAX_DURATION_MINUTES.'),
+          force_cache: z.boolean().optional().describe('Pre-load the image on Edgegap so deployments start faster.'),
+          verify_image: z.boolean().optional().describe('Check Edgegap can pull the image when saving.'),
+          termination_grace_period_seconds: z
+            .number()
+            .int()
+            .min(0)
+            .max(3600)
+            .optional()
+            .describe('Seconds between SIGTERM and SIGKILL when a deployment stops.'),
+          dry_run: dryRunParam,
+        },
+        annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      },
+      async (args) =>
+        guarded(auth, NOT_FOUND.app, async () => {
+          assertAppAllowed(config, args.application);
+
+          const leak = await tokenLeak(auth, args.dry_run, [
+            ['registry_username', args.registry_username],
+            ['registry_token', args.registry_token],
+          ]);
+          if (leak) return leak;
+
+          if (args.docker_tag !== undefined) {
+            const tagProblem = badTag(args.docker_tag);
+            if (tagProblem) return fail(`Refused: ${tagProblem}. ${TAG_FIX}`);
+          }
+          if (args.docker_image !== undefined) {
+            const imageProblem = badImage(args.docker_repository ?? '', args.docker_image);
+            if (imageProblem) return fail(`Refused: ${imageProblem}`);
+          }
+
+          const capped =
+            args.max_duration_minutes === undefined
+              ? undefined
+              : Math.min(args.max_duration_minutes, config.maxDurationCeiling);
+          const body: Record<string, unknown> = {
+            is_active: args.is_active,
+            docker_repository: args.docker_repository,
+            docker_image: args.docker_image,
+            docker_tag: args.docker_tag,
+            private_username: args.registry_username,
+            private_token: args.registry_token,
+            max_duration: capped,
+            force_cache: args.force_cache,
+            verify_image: args.verify_image,
+            termination_grace_period_seconds: args.termination_grace_period_seconds,
+          };
+          for (const k of Object.keys(body)) if (body[k] === undefined) delete body[k];
+          if (Object.keys(body).length === 0) {
+            return fail('Nothing to change: pass at least one field to update.');
+          }
+
+          const notes =
+            capped !== undefined && capped < (args.max_duration_minutes ?? 0)
+              ? [`max_duration capped to ${capped} minutes by EDGEGAP_MAX_DURATION_MINUTES.`]
+              : [];
+          if (args.dry_run) {
+            const dry = client.dryRun();
+            await dry.client.updateAppVersion(args.application, args.version, body);
+            return dryRunResult(dry.requests, notes);
+          }
+          await client.updateAppVersion(args.application, args.version, body);
+          return ok({
+            updated: `${args.application}/${args.version}`,
+            changed: Object.keys(body).map((k) => (k === 'private_token' ? 'registry_token' : k === 'private_username' ? 'registry_username' : k)),
+            notes: notes.length ? notes : undefined,
+            next_step: 'Running deployments keep the old settings. Check the result with edgegap_get_app_version.',
+          });
+        })
+    );
+  }
+
+  // --------------------------------------------------------------- 5b ----
+  tool(
+    'edgegap_list_locations',
+    {
+      title: 'List where servers can run',
+      description:
+        'List the cities Edgegap can deploy to. Pass application and version to see only the ' +
+        'locations with capacity for that version right now. Use it to pick geo_coordinates for ' +
+        'edgegap_deploy when you have no player IPs, or to tell a developer where their players ' +
+        'can be served from. For the ping beacons game clients use to measure latency, see ' +
+        'edgegap_list_ping_beacons.',
+      inputSchema: {
+        application: z.string().optional().describe('With version: only locations with capacity for it now.'),
+        version: z.string().optional(),
+        page: z.number().int().min(1).optional(),
+        limit: z.number().int().min(1).max(200).optional().describe('Default 100.'),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async ({ application, version, page, limit }) =>
+      guarded(auth, NOT_FOUND.app, async () => {
+        if ((application === undefined) !== (version === undefined)) {
+          return fail('Pass both application and version to filter by capacity, or neither for every location.');
+        }
+        const res = await client.listLocations({ app: application, version, page, limit: limit ?? 100 });
+        const locations = (res.locations ?? []).map((l) => ({
+          city: l.city,
+          region: l.administrative_division || undefined,
+          country: l.country,
+          continent: l.continent,
+          latitude: l.latitude,
+          longitude: l.longitude,
+        }));
+        return ok({
+          filtered_for: application ? `${application}/${version} (capacity right now)` : undefined,
+          ...pageInfo(res.total_count, locations.length, page ?? 1),
+          locations,
+          messages: res.messages?.length ? res.messages : undefined,
+        });
+      })
+  );
+
+  tool(
+    'edgegap_list_ping_beacons',
+    {
+      title: 'List ping beacons',
+      description:
+        'List Edgegap\'s ping beacons: one host per region that a game client can ping (UDP or ' +
+        'TCP) to measure its latency before matchmaking. The matchmaker\'s latency rules use these ' +
+        'measurements. Read-only; the game client does the pinging, not this tool.',
+      inputSchema: {
+        page: z.number().int().min(1).optional(),
+        limit: z.number().int().min(1).max(200).optional().describe('Default 100.'),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async ({ page, limit }) =>
+      guard(auth, async () => {
+        const res = await client.listBeacons({ page, limit: limit ?? 100 });
+        const beacons = (res.locations ?? []).map((b) => ({
+          host: b.fqdn ?? b.host,
+          udp_port: b.udp_port,
+          tcp_port: b.tcp_port,
+          city: b.location?.city,
+          country: b.location?.country,
+          continent: b.location?.continent,
+        }));
+        return ok({ total: res.count ?? beacons.length, beacons });
+      })
+  );
 
   // ---------------------------------------------------------------- 5 ----
   if (mutating) {
@@ -1157,6 +1427,49 @@ export function registerTools(
       })
   );
 
+  // --------------------------------------------------------------- 10b ----
+  tool(
+    'edgegap_get_deployment_metrics',
+    {
+      title: 'Get CPU, memory and network use of a deployment',
+      description:
+        'Summarise a deployment\'s resource use over time: CPU, CPU throttling, memory and network, ' +
+        'each as latest, average and peak, with the API\'s own labels. Use it to size a version ' +
+        '(cpu_units, memory_mb) from a real match, or to check whether a crash was memory or CPU ' +
+        'starvation before redeploying. Defaults to the whole life of the deployment.',
+      inputSchema: {
+        request_id: z.string().describe('The request_id of the deployment.'),
+        start_time: z.string().optional().describe('ISO 8601. Default: when the deployment started.'),
+        end_time: z.string().optional().describe('ISO 8601. Default: now, or when it stopped.'),
+        step: z.string().optional().describe('Averaging step, e.g. "30s" or "5m". Default: the API\'s.'),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async ({ request_id, start_time, end_time, step }) =>
+      guarded(auth, NOT_FOUND.deployment, async () => {
+        const bad = checkRequestId(request_id);
+        if (bad) return bad;
+        const m = await client.getDeploymentMetrics(request_id, { start_time, end_time, steps: step });
+        return ok({
+          request_id,
+          cpu: summarizeSeries(m.cpu),
+          cpu_throttle_rate: summarizeSeries(m.cpu_throttle_rate),
+          memory: summarizeSeries(m.mem),
+          network_receive: summarizeSeries(m.network?.receive),
+          network_transmit: summarizeSeries(m.network?.transmit),
+          totals: m.total
+            ? {
+                received: summarizeSeries(m.total.receive_total)?.latest,
+                transmitted: summarizeSeries(m.total.transmit_total)?.latest,
+                disk_read: summarizeSeries(m.total.disk_read_total)?.latest,
+                disk_written: summarizeSeries(m.total.disk_write_total)?.latest,
+              }
+            : undefined,
+          note: 'Units are as the API labels them; values are averaged per step.',
+        });
+      })
+  );
+
   // ============================================= before the first deploy ====
 
   // -------------------------------------------------------------- 11a ----
@@ -1465,10 +1778,7 @@ export function registerTools(
       guard(auth, async () => {
         // Agents often pass the full reference they pushed. Reduce it to what
         // the API wants: no "registry.edgegap.com/" host, no ":tag".
-        const parts = image_name.replace(/@sha256:.*$/, '').split('/');
-        if (parts.length > 1 && /[.:]/.test(parts[0])) parts.shift();
-        parts[parts.length - 1] = parts[parts.length - 1].replace(/:[^:]*$/, '');
-        let name = parts.join('/');
+        let name = imageNameOnly(image_name);
 
         const query = { page, limit: limit ?? 20 };
         const notFound = (err: unknown) => err instanceof EdgegapApiError && err.status === 404;
@@ -1515,6 +1825,68 @@ export function registerTools(
         });
       })
   );
+
+  // --------------------------------------------------------------- 13b ----
+  if (mutating) {
+    tool(
+      'edgegap_delete_registry_tag',
+      {
+        title: 'Delete one image tag from the Edgegap registry',
+        description:
+          'Delete one tag, and the image it points to, from this organization\'s Edgegap container ' +
+          'registry, to clean up old builds. Takes exactly one image name and one exact tag; ' +
+          'wildcards, lists and "latest" are refused, and there is no bulk delete. A version that ' +
+          'still uses the tag can no longer start deployments, so check edgegap_list_app_versions ' +
+          'first. Cannot be undone.',
+        inputSchema: {
+          image_name: z.string().min(1).describe('The image name only, e.g. "my-game-server", as for edgegap_list_registry_tags.'),
+          tag: z.string().describe('The exact tag to delete, e.g. "build-41".'),
+          dry_run: dryRunParam,
+        },
+        annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: true },
+      },
+      async ({ image_name, tag, dry_run }) =>
+        guard(auth, async () => {
+          let name = imageNameOnly(image_name);
+          if (!/^[a-z0-9][a-z0-9._\/-]{0,254}$/.test(name)) {
+            return fail(`"${image_name.slice(0, 80)}" is not a single image name. Pass one, e.g. "my-game-server".`);
+          }
+          if (badTag(tag) || tag.toLowerCase() === 'latest') {
+            return fail(`"${tag.slice(0, 80)}" is not one exact tag. Pass a single tag as listed by edgegap_list_registry_tags; "latest" and wildcards are refused.`);
+          }
+          if (dry_run) {
+            const dry = client.dryRun();
+            await dry.client.deleteRegistryTag(name, tag);
+            return dryRunResult(dry.requests, name !== image_name ? [`Looked up "${name}".`] : []);
+          }
+          const notFound = (err: unknown) => err instanceof EdgegapApiError && err.status === 404;
+          try {
+            let res;
+            try {
+              res = await client.deleteRegistryTag(name, tag);
+            } catch (err) {
+              // As in edgegap_list_registry_tags: "<project>/<image>" 404s, and
+              // a 404 deleted nothing, so retry once without the project.
+              if (!notFound(err) || !name.includes('/')) throw err;
+              name = name.slice(name.indexOf('/') + 1);
+              res = await client.deleteRegistryTag(name, tag);
+            }
+            return ok({
+              image_name: name,
+              deleted_tag: res.deleted_tag ?? tag,
+              image_deleted: res.artifact?.artifact_deleted,
+              freed_mb: res.artifact?.artifact_deleted ? res.artifact?.size_mb : undefined,
+              tags_still_on_that_image: res.artifact?.remaining_tags?.length ? res.artifact.remaining_tags : undefined,
+            });
+          } catch (err) {
+            if (notFound(err)) {
+              return fail(`No tag "${tag}" on image "${name}" in this organization's registry. List tags with edgegap_list_registry_tags.`);
+            }
+            throw err;
+          }
+        })
+    );
+  }
 
   // ================================================== peer-to-peer relays ====
 
@@ -1612,6 +1984,35 @@ export function registerTools(
       guarded(auth, NOT_FOUND.relay, async () => ok(compactRelay(await client.getRelaySession(session_id))))
   );
 
+  // --------------------------------------------------------------- 15b ----
+  tool(
+    'edgegap_list_relay_sessions',
+    {
+      title: 'List relay sessions',
+      description:
+        'List this organization\'s active relay sessions: id, status, readiness and player count. ' +
+        'Relay sessions bill while open, so use this to find ones left over from earlier sessions ' +
+        'and delete them with edgegap_delete_relay_session. Authorization tokens are not listed; ' +
+        'read one session with edgegap_get_relay_session.',
+      inputSchema: {},
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async () =>
+      guard(auth, async () => {
+        const res = await client.listRelaySessions();
+        const sessions = (res.sessions ?? []).map((r) => ({
+          session_id: r.session_id,
+          status: r.status,
+          ready: r.ready,
+          linked: r.linked,
+          players: r.session_users?.length ?? 0,
+          relay: r.relay?.host ?? r.relay?.ip ?? undefined,
+          error: r.error || undefined,
+        }));
+        return ok({ ...pageInfo(res.total_count, sessions.length, 1), sessions });
+      })
+  );
+
   if (mutating) {
     // ------------------------------------------------------------- 16 ----
     tool(
@@ -1642,6 +2043,38 @@ export function registerTools(
             user_authorization_token: res.session_user?.authorization_token,
             session_authorization_token: res.authorization_token,
           });
+        })
+    );
+
+    // ------------------------------------------------------------- 16b ----
+    tool(
+      'edgegap_revoke_relay_user',
+      {
+        title: 'Remove a player from a relay session',
+        description:
+          'Revoke one player\'s access to a relay session, by that player\'s authorization token ' +
+          '(from edgegap_get_relay_session or edgegap_authorize_relay_user). The player loses the ' +
+          'relay connection; the session and the other players stay.',
+        inputSchema: {
+          session_id: z.string().describe('The relay session_id, e.g. "0724828881e2-S".'),
+          user_authorization_token: z.number().int().describe('The player\'s authorization token, not the session\'s.'),
+          dry_run: dryRunParam,
+        },
+        annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: true },
+      },
+      async ({ session_id, user_authorization_token, dry_run }) =>
+        guarded(auth, NOT_FOUND.relay, async () => {
+          if (!SESSION_ID.test(session_id)) {
+            return fail(`"${session_id.slice(0, 80)}" is not a single relay session_id. Pass exactly one, e.g. "0724828881e2-S".`);
+          }
+          const body = { session_id, authorization_token: user_authorization_token };
+          if (dry_run) {
+            const dry = client.dryRun();
+            await dry.client.revokeRelayUser(body);
+            return dryRunResult(dry.requests);
+          }
+          const res = await client.revokeRelayUser(body);
+          return ok({ ...compactRelay(res), revoked: user_authorization_token });
         })
     );
 
