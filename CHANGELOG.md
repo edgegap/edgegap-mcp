@@ -2,6 +2,12 @@
 
 Published versions of `@edgegap/mcp`, which also run on the hosted endpoint at `mcp.edgegap.dev`. Dates are npm publish dates. Versions merged but never published (0.5.8, 0.6.0) shipped as part of the next release. Older entries are summarised from the commit history.
 
+## 0.7.1 (2026-10-21)
+
+- Skills pack 0.14.0 (edgegap-agent-skills `67df139`): new skill `edgegap-playfab` for games that keep PlayFab for players, login and Matchmaking. A rule on `match_found` runs Azure Functions that deploy an Edgegap server near the matched players and hand out the address through read-only player data, verified end to end with `sample-playfab-matchmaker-fishnet`. `edgegap` routes PlayFab to it, and `edgegap-deployments-api`, `edgegap-unity` and `edgegap-fishnet` point to it.
+- The server instructions, `edgegap_get_skill` and `edgegap_list_skills` name `edgegap-playfab`.
+- `sync-skills` accepts `.js` and `.funcignore` files (the skill ships Node Azure Functions).
+
 ## 0.7.0
 
 **New tools:**

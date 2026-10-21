@@ -18,7 +18,7 @@ import { join, relative, sep } from 'node:path';
 const REPO = 'https://github.com/edgegap/edgegap-agent-skills';
 const PIN = 'scripts/skills-pin.txt';
 const OUT = 'src/skills.generated.ts';
-const TEXT_EXT = /\.(md|cs|h|cpp|json|ini|xml|txt|yml|yaml|meta|asset|ts|mjs|sh|gd|cfg|go)$|(^|\/)(Dockerfile|\.dockerignore|\.gitattributes|\.gitignore|\.env\.example|go\.mod|go\.sum)$/;
+const TEXT_EXT = /\.(md|cs|h|cpp|json|ini|xml|txt|yml|yaml|meta|asset|ts|js|mjs|sh|gd|cfg|go)$|(^|\/)(Dockerfile|\.dockerignore|\.funcignore|\.gitattributes|\.gitignore|\.env\.example|go\.mod|go\.sum)$/;
 
 const args = process.argv.slice(2);
 const flag = (name) => {

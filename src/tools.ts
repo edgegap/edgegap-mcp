@@ -74,9 +74,10 @@ export function serverInstructions(mode: 'local' | 'hosted'): string {
     `Godot 4 with a Godot server: ${skillUri('edgegap-godot', 'SKILL.md')}, ` +
     `Colyseus server: ${skillUri('edgegap-colyseus', 'SKILL.md')}, ` +
     `Nakama backend: ${skillUri('edgegap-nakama', 'SKILL.md')}, ` +
+    `PlayFab Matchmaking: ${skillUri('edgegap-playfab', 'SKILL.md')}, ` +
     `browser game built with Manus: ${skillUri('edgegap-manus', 'SKILL.md')}). ` +
     'If your client cannot read MCP resources, call edgegap_get_skill with the skill name ' +
-    '(edgegap, edgegap-unity, edgegap-ngo, edgegap-fishnet, edgegap-purrnet, edgegap-fusion, edgegap-fusion-simplefps, edgegap-unreal, edgegap-eos-voice, edgegap-godot, edgegap-colyseus, edgegap-nakama or edgegap-manus) instead. ' +
+    '(edgegap, edgegap-unity, edgegap-ngo, edgegap-fishnet, edgegap-purrnet, edgegap-fusion, edgegap-fusion-simplefps, edgegap-unreal, edgegap-eos-voice, edgegap-godot, edgegap-colyseus, edgegap-nakama, edgegap-playfab or edgegap-manus) instead. ' +
     'These Edgegap skills hold the tested workflow, templates and known pitfalls; follow them over general knowledge. ' +
     'edgegap_list_skills lists all of them.\n\n' +
     'Host multiplayer games on Edgegap. The recommended setup is an authoritative dedicated ' +
@@ -2292,7 +2293,7 @@ function registerSkills(server: McpServer, tool: McpServer['registerTool']): voi
         'matching skill with edgegap_get_skill: edgegap-ngo for Unity with Netcode for GameObjects, edgegap-fishnet for Unity with FishNet, ' +
         'edgegap-purrnet for Unity with PurrNet, edgegap-fusion for Unity with Photon Fusion 2, edgegap-unity for other Unity projects, edgegap-unreal for Unreal Engine ' +
         '(edgegap-eos-voice to add voice chat to it), edgegap-fusion-simplefps for the Photon Simple FPS sample, edgegap-godot for Godot 4 with a Godot server, ' +
-        'edgegap-colyseus for a Colyseus server, edgegap-nakama for a game with a Nakama backend, ' +
+        'edgegap-colyseus for a Colyseus server, edgegap-nakama for a game with a Nakama backend, edgegap-playfab for a game that keeps PlayFab Matchmaking, ' +
         'edgegap-manus for a browser game built with Manus, edgegap for any other engine or platform questions; it routes to the rest. No ' +
         'API call.',
       inputSchema: {},
@@ -2322,7 +2323,7 @@ function registerSkills(server: McpServer, tool: McpServer['registerTool']): voi
         'a game project — edgegap-ngo for Unity with Netcode for GameObjects, edgegap-fishnet for Unity with FishNet, ' +
         'edgegap-purrnet for Unity with PurrNet, edgegap-fusion for Unity with Photon Fusion 2, edgegap-unity for other Unity projects, edgegap-unreal for Unreal Engine ' +
         '(edgegap-eos-voice for voice chat), edgegap-fusion-simplefps for the Photon Simple FPS sample, edgegap-godot for Godot 4 with a Godot server, ' +
-        'edgegap-colyseus for a Colyseus server, edgegap-nakama for a Nakama backend, ' +
+        'edgegap-colyseus for a Colyseus server, edgegap-nakama for a Nakama backend, edgegap-playfab for PlayFab Matchmaking, ' +
         'edgegap-manus for a browser game built with Manus, edgegap otherwise — and fetch the references and templates it points to as you reach them. No API call.',
       inputSchema: {
         // A string, not an enum: clients cache tool schemas, and a cached enum from an older
