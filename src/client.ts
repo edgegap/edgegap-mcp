@@ -187,6 +187,10 @@ export class EdgegapClient {
     return this.request<AppRecord>('POST', 'v1', '/v1/app', { body });
   }
 
+  updateApp(appName: string, body: Record<string, unknown>) {
+    return this.request<AppRecord>('PATCH', 'v1', `/v1/app/${encodeURIComponent(appName)}`, { body });
+  }
+
   listAppVersions(appName: string) {
     return this.request<ListVersionsResponse>(
       'GET',
@@ -201,6 +205,15 @@ export class EdgegapClient {
       'GET',
       'v1',
       `/v1/app/${encodeURIComponent(appName)}/version/${encodeURIComponent(versionName)}`
+    );
+  }
+
+  updateAppVersion(appName: string, versionName: string, body: Record<string, unknown>) {
+    return this.request<{ success: boolean; version: AppVersionRecord }>(
+      'PATCH',
+      'v1',
+      `/v1/app/${encodeURIComponent(appName)}/version/${encodeURIComponent(versionName)}`,
+      { body }
     );
   }
 
@@ -238,6 +251,29 @@ export class EdgegapClient {
       'v1',
       `/v1/stop/${encodeURIComponent(requestId)}`
     );
+  }
+
+  getDeploymentMetrics(
+    requestId: string,
+    query: { start_time?: string; end_time?: string; steps?: string } = {}
+  ) {
+    return this.request<DeploymentMetrics>(
+      'GET',
+      'v1',
+      `/v1/metrics/deployment/${encodeURIComponent(requestId)}`,
+      { query }
+    );
+  }
+
+  // --- Locations ----------------------------------------------------------
+
+  /** With app and version, only locations with capacity for it right now. */
+  listLocations(query: { app?: string; version?: string; page?: number; limit?: number } = {}) {
+    return this.request<LocationsResponse>('GET', 'v1', '/v1/locations', { query });
+  }
+
+  listBeacons(query: { page?: number; limit?: number } = {}) {
+    return this.request<BeaconsResponse>('GET', 'v1', '/v1/locations/beacons', { query });
   }
 
   getDeploymentLogs(requestId: string, format: 'text' | 'ndjson' = 'text') {
@@ -282,7 +318,26 @@ export class EdgegapClient {
     );
   }
 
+  /** Deletes one tag and, per the spec, the image it points to. Same
+   *  image-name rules as listRegistryTags. */
+  deleteRegistryTag(imageName: string, tag: string) {
+    const path = imageName.split('/').map(encodeURIComponent).join('/');
+    return this.request<RegistryTagDeleted>(
+      'DELETE',
+      'v1',
+      `/v1/container-registry/images/${path}/tags/${encodeURIComponent(tag)}`
+    );
+  }
+
   // --- Relays -------------------------------------------------------------
+
+  listRelaySessions() {
+    return this.request<{ sessions?: RelaySession[]; total_count?: number }>('GET', 'v1', '/v1/relays/sessions');
+  }
+
+  revokeRelayUser(body: { session_id: string; authorization_token: number }) {
+    return this.request<RelaySession>('POST', 'v1', '/v1/relays/sessions:revoke-user', { body });
+  }
 
   createRelaySession(body: { users: Array<{ ip: string }>; webhook_url?: string }) {
     return this.request<RelaySession>('POST', 'v1', '/v1/relays/sessions', { body });
@@ -338,6 +393,13 @@ export interface AppVersionRecord {
   docker_tag?: string;
   max_duration?: number;
   caching_percent?: number;
+  force_cache?: boolean;
+  verify_image?: boolean;
+  time_to_deploy?: number;
+  restart_policy?: string;
+  termination_grace_period_seconds?: number;
+  /** Values are not surfaced; names only. */
+  envs?: Array<{ key: string; value?: string; is_hidden?: boolean }>;
   ports?: Array<{ port: number; protocol: string; name?: string; tls_upgrade?: boolean }>;
   /** Registry login for pulling the image. The API returns the token in
    *  plain text here: read it for presence only, never pass it on. */
@@ -432,6 +494,54 @@ export interface RelaySession {
     ports?: { server?: RelayPort; client?: RelayPort };
   } | null;
   webhook_url?: string | null;
+}
+
+/** One series: parallel arrays of labels, values and timestamps. */
+export interface MetricSeries {
+  labels?: string[];
+  datasets?: number[];
+  timestamps?: string[];
+}
+
+export interface DeploymentMetrics {
+  cpu?: MetricSeries;
+  cpu_throttle_rate?: MetricSeries;
+  cpu_throttle_total?: MetricSeries;
+  mem?: MetricSeries;
+  network?: { receive?: MetricSeries; transmit?: MetricSeries };
+  total?: {
+    receive_total?: MetricSeries;
+    transmit_total?: MetricSeries;
+    disk_read_total?: MetricSeries;
+    disk_write_total?: MetricSeries;
+  };
+}
+
+export interface LocationRecord {
+  city?: string;
+  country?: string;
+  continent?: string;
+  administrative_division?: string;
+  timezone?: string;
+  latitude?: number;
+  longitude?: number;
+}
+
+export interface LocationsResponse {
+  locations?: LocationRecord[];
+  messages?: string[];
+  total_count?: number;
+  pagination?: { number?: number; has_next?: boolean };
+}
+
+export interface BeaconsResponse {
+  locations?: Array<{ host?: string; fqdn?: string; udp_port?: number; tcp_port?: number; location?: LocationRecord }>;
+  count?: number;
+}
+
+export interface RegistryTagDeleted {
+  deleted_tag?: string;
+  artifact?: { artifact_deleted?: boolean; size_mb?: number; remaining_tags?: string[]; image_hash?: string };
 }
 
 export interface DeploymentLogs {

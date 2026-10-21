@@ -117,6 +117,46 @@ const mock = http.createServer((req, res) => {
           return send(200, { data: [], total_count: agentRunning });
         }
         return send(200, { data: [{ request_id: '7e709a0d8efd', ready: true, fqdn: '7e709a0d8efd.pr.edgegap.net', start_time: '2026-09-30T12:00:00Z', tags: [] }], total_count: 1 });
+      // --- API coverage tools (0.7.0). Shapes from spec/edgegap-v1-openapi.json.
+      case 'PATCH /v1/app/my-game':
+        return send(200, { name: 'my-game', is_active: JSON.parse(body).is_active });
+      case 'PATCH /v1/app/my-game/version/build-42':
+        return send(200, { success: true, version: { name: 'build-42' } });
+      case 'GET /v1/app/my-game/version/full-1':
+        return send(200, {
+          name: 'full-1', is_active: true, docker_repository: 'registry.edgegap.com', docker_image: 'my-org-abc123/my-game-server',
+          docker_tag: 'build-42', req_cpu: 512, req_memory: 1024, max_duration: 60, force_cache: true, caching_percent: 100,
+          verify_image: false, restart_policy: 'Never', termination_grace_period_seconds: 5, time_to_deploy: 15,
+          private_username: 'robot$pull', private_token: 'registry-secret-do-not-leak',
+          ports: [{ port: 7777, protocol: 'UDP', name: 'gameport', tls_upgrade: false }],
+          envs: [{ key: 'GAME_MODE', value: 'env-value-do-not-leak', is_hidden: false }, { key: 'API_KEY', value: 'x', is_hidden: true }],
+        });
+      case 'GET /v1/locations': {
+        const q = new URL(req.url, 'http://x').searchParams;
+        const all = [
+          { city: 'Montreal', country: 'Canada', continent: 'North America', administrative_division: 'Quebec', latitude: 45.5, longitude: -73.6 },
+          { city: 'Frankfurt', country: 'Germany', continent: 'Europe', administrative_division: '', latitude: 50.1, longitude: 8.7 },
+        ];
+        const rows = q.get('app') ? all.slice(0, 1) : all;
+        return send(200, { locations: rows, messages: [], total_count: rows.length, pagination: { number: 1, has_next: false } });
+      }
+      case 'GET /v1/locations/beacons':
+        return send(200, { locations: [{ host: '1.2.3.4', fqdn: 'beacon-mtl.edgegap.net', udp_port: 5000, tcp_port: 5001, location: { city: 'Montreal', country: 'Canada', continent: 'North America' } }], count: 1 });
+      case 'GET /v1/metrics/deployment/7e709a0d8efd':
+        return send(200, {
+          cpu: { labels: ['cpu %'], datasets: [10, 30, 20], timestamps: ['t0', 't1', 't2'] },
+          mem: { labels: ['MB'], datasets: [200, 400, 300], timestamps: ['t0', 't1', 't2'] },
+          network: { receive: { labels: ['B/s'], datasets: [1, 2], timestamps: ['t0', 't1'] }, transmit: { datasets: [] } },
+          total: { receive_total: { datasets: [5, 9] } },
+        });
+      case 'DELETE /v1/container-registry/images/my-game-server/tags/build-41':
+        return send(200, { deleted_tag: 'build-41', artifact: { artifact_deleted: true, size_mb: 512, remaining_tags: [], image_hash: 'sha256:abc' } });
+      case 'DELETE /v1/container-registry/images/my-org-abc123/my-game-server/tags/build-41':
+        return send(404, { message: 'not found' });
+      case 'GET /v1/relays/sessions':
+        return send(200, { sessions: [{ session_id: 'abc123-S', authorization_token: 111, status: 'Linked', ready: true, linked: true, session_users: [{ ip_address: '203.0.113.1', authorization_token: 901 }], relay: { host: 'cc84b011777b.pr.edgegap.net' } }], total_count: 1 });
+      case 'POST /v1/relays/sessions:revoke-user':
+        return send(200, { session_id: 'abc123-S', authorization_token: 111, status: 'Linked', ready: true, linked: true, session_users: [], relay: { host: 'cc84b011777b.pr.edgegap.net' } });
       default:
         return send(500, { message: `mock has no route for ${route}` });
     }
@@ -478,6 +518,10 @@ const dryCases = [
   ['edgegap_create_relay_session', { user_ips: ['203.0.113.1'] }, 'POST', '/v1/relays/sessions'],
   ['edgegap_authorize_relay_user', { session_id: 'abc123-S', user_ip: '203.0.113.2' }, 'POST', '/v1/relays/sessions:authorize-user'],
   ['edgegap_delete_relay_session', { session_id: 'abc123-S' }, 'DELETE', '/v1/relays/sessions/abc123-S'],
+  ['edgegap_update_app', { application: 'my-game', is_active: true }, 'PATCH', '/v1/app/my-game'],
+  ['edgegap_update_app_version', { application: 'my-game', version: 'build-42', is_active: false }, 'PATCH', '/v1/app/my-game/version/build-42'],
+  ['edgegap_delete_registry_tag', { image_name: 'my-game-server', tag: 'build-41' }, 'DELETE', '/v1/container-registry/images/my-game-server/tags/build-41'],
+  ['edgegap_revoke_relay_user', { session_id: 'abc123-S', user_authorization_token: 901 }, 'POST', '/v1/relays/sessions:revoke-user'],
 ];
 for (const [name, args, method, path] of dryCases) {
   calls.length = 0;
@@ -661,6 +705,80 @@ await icall('edgegap_deploy', { ...dep, env: [{ key: 'MATCH_ID', value: 'm' }, {
 const depEnvs = calls.find((x) => x.method === 'POST')?.body?.environment_variables ?? [];
 check('deploy: MATCH_ID visible, JWT_SECRET hidden', depEnvs.map((e) => e.is_hidden).join() === 'false,true', JSON.stringify(depEnvs));
 await ic.close();
+
+// ------------------------------------------------ 11. API coverage ----
+console.log('\n11. API coverage tools');
+const ac = await connect({ EDGEGAP_API_TOKEN: REAL });
+const acall = async (name, args) => ac.callTool({ name, arguments: args });
+
+// get_app_version: full settings, env names only, no registry token or env values
+res = await acall('edgegap_get_app_version', { application: 'my-game', version: 'full-1' });
+r = json(res);
+check('get_app_version: settings shown', r.force_cache === true && r.restart_policy === 'Never' && r.registry_credentials_set === true && r.image === 'registry.edgegap.com/my-org-abc123/my-game-server/build-42', JSON.stringify(r).slice(0, 200));
+check('get_app_version: env names and hidden flag, no values', JSON.stringify(r.env) === JSON.stringify([{ key: 'GAME_MODE', hidden: false }, { key: 'API_KEY', hidden: true }]));
+check('get_app_version: registry token and env values never shown', !text(res).includes('registry-secret-do-not-leak') && !text(res).includes('env-value-do-not-leak'));
+
+// update_app_version: only passed fields, capped, same refusals as create
+calls.length = 0;
+r = json(await acall('edgegap_update_app_version', { application: 'my-game', version: 'build-42', docker_tag: 'build-43', force_cache: true, max_duration_minutes: 600 }));
+let patch = calls.find((x) => x.method === 'PATCH');
+check('update_app_version: PATCH with only the passed fields', patch?.url === '/v1/app/my-game/version/build-42' && JSON.stringify(Object.keys(patch.body).sort()) === JSON.stringify(['docker_tag', 'force_cache', 'max_duration']), JSON.stringify(patch?.body));
+check('update_app_version: max_duration capped to the ceiling', patch?.body?.max_duration === 60 && r.notes?.some((n) => /capped/.test(n)));
+for (const [label, extra] of [['"latest"', { docker_tag: 'latest' }], ['host in docker_image', { docker_image: 'docker.io/me/srv:v1' }], ['token as registry login', { registry_token: REAL }], ['nothing to change', {}]]) {
+  calls.length = 0;
+  res = await acall('edgegap_update_app_version', { application: 'my-game', version: 'build-42', ...extra });
+  check(`update_app_version, ${label}: refused, nothing sent`, res.isError && calls.length === 0, text(res).slice(0, 120));
+}
+calls.length = 0;
+res = await acall('edgegap_update_app_version', { application: 'my-game', version: 'build-42', registry_token: 'reg-secret-xyz', dry_run: true });
+check('update_app_version dry run: nothing sent, registry token masked', calls.length === 0 && !text(res).includes('reg-secret-xyz'));
+
+// update_app
+calls.length = 0;
+r = json(await acall('edgegap_update_app', { application: 'my-game', is_active: false }));
+check('update_app: PATCH is_active', calls.find((x) => x.method === 'PATCH')?.body?.is_active === false && r.active === false);
+
+// locations and beacons
+r = json(await acall('edgegap_list_locations', {}));
+check('list_locations: every location, compact', r.locations?.length === 2 && r.locations[0].region === 'Quebec' && r.locations[1].region === undefined && r.filtered_for === undefined);
+calls.length = 0;
+r = json(await acall('edgegap_list_locations', { application: 'my-game', version: 'build-42' }));
+const lq = new URL(calls[0].url, 'http://x').searchParams;
+check('list_locations with a version: filtered for capacity', lq.get('app') === 'my-game' && lq.get('version') === 'build-42' && r.locations?.length === 1 && /capacity/.test(r.filtered_for));
+res = await acall('edgegap_list_locations', { application: 'my-game' });
+check('list_locations: application without version is refused', res.isError === true);
+r = json(await acall('edgegap_list_ping_beacons', {}));
+check('list_ping_beacons: host and ports', r.beacons?.[0]?.host === 'beacon-mtl.edgegap.net' && r.beacons[0].udp_port === 5000 && r.beacons[0].city === 'Montreal');
+
+// metrics
+r = json(await acall('edgegap_get_deployment_metrics', { request_id: '7e709a0d8efd' }));
+check('metrics: latest, average and peak per series', r.cpu?.latest === 20 && r.cpu.average === 20 && r.cpu.peak === 30 && r.memory?.peak === 400 && r.memory.labels?.[0] === 'MB');
+check('metrics: empty series left out, totals kept', r.network_transmit === undefined && r.totals?.received === 9);
+res = await acall('edgegap_get_deployment_metrics', { request_id: '*' });
+check('metrics: a wildcard request_id is refused', res.isError === true);
+
+// delete registry tag
+calls.length = 0;
+r = json(await acall('edgegap_delete_registry_tag', { image_name: 'my-game-server', tag: 'build-41' }));
+check('delete_registry_tag: one DELETE, result reported', calls.filter((x) => x.method === 'DELETE').length === 1 && r.deleted_tag === 'build-41' && r.image_deleted === true && r.freed_mb === 512);
+calls.length = 0;
+r = json(await acall('edgegap_delete_registry_tag', { image_name: 'registry.edgegap.com/my-org-abc123/my-game-server:build-41', tag: 'build-41' }));
+check('delete_registry_tag: full reference reduced, project dropped after a 404', r.image_name === 'my-game-server' && calls.filter((x) => x.method === 'DELETE').length === 2);
+for (const bad of ['latest', '*', 'a,b', '']) {
+  calls.length = 0;
+  res = await acall('edgegap_delete_registry_tag', { image_name: 'my-game-server', tag: bad });
+  check(`delete_registry_tag "${bad}" refused, nothing sent`, res.isError && calls.length === 0);
+}
+
+// relays
+r = json(await acall('edgegap_list_relay_sessions', {}));
+check('list_relay_sessions: compact, no authorization tokens', r.sessions?.[0]?.session_id === 'abc123-S' && r.sessions[0].players === 1 && !JSON.stringify(r).includes('901'));
+calls.length = 0;
+r = json(await acall('edgegap_revoke_relay_user', { session_id: 'abc123-S', user_authorization_token: 901 }));
+check('revoke_relay_user: posts the player token', JSON.stringify(calls.find((x) => x.method === 'POST')?.body) === JSON.stringify({ session_id: 'abc123-S', authorization_token: 901 }) && r.revoked === 901);
+res = await acall('edgegap_revoke_relay_user', { session_id: '*', user_authorization_token: 1 });
+check('revoke_relay_user: a wildcard session_id is refused', res.isError === true);
+await ac.close();
 
 // ------------------------------------------------- token prefix in env ----
 const dbl = await connect({ EDGEGAP_API_TOKEN: 'token token fake-api-token' });
