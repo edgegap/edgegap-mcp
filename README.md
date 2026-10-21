@@ -335,13 +335,15 @@ docker run --rm -p 8080:8080 edgegap-mcp
 
 Clients connect to `http://<host>:8080/mcp` with their own `Authorization` header, the same way they connect to the hosted endpoint. The image holds no credential, and `/health` answers without one. `PORT`, `HOST`, `EDGEGAP_READ_ONLY`, `EDGEGAP_APP_ALLOWLIST`, `EDGEGAP_MAX_DURATION_MINUTES` and `EDGEGAP_MAX_AGENT_DEPLOYMENTS` apply. Read [worker/DECISION.md](worker/DECISION.md) before exposing it beyond a private network.
 
-Prebuilt images are published to `ghcr.io/edgegap/edgegap-mcp`, tagged `main` and `sha-<commit>` on every push to `main`, plus the version on `v*` tags:
+Prebuilt images for `linux/amd64` and `linux/arm64` are published to `ghcr.io/edgegap/edgegap-mcp`, tagged `main` and `sha-<commit>` on every push to `main`, plus the version on `v*` tags:
 
 ```bash
 docker run --rm -p 8080:8080 ghcr.io/edgegap/edgegap-mcp:main
 ```
 
 ## Development
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the checks a change has to pass, [CHANGELOG.md](CHANGELOG.md) for what each version changed, and [SECURITY.md](SECURITY.md) to report a vulnerability.
 
 ```bash
 npm ci
@@ -359,6 +361,7 @@ npm run check-skills      # exit 1 if src/skills.generated.ts differs from the p
 
 | Test | Covers |
 | --- | --- |
+| `test/unit.test.mjs` | Unit tests for the tag, image, secret-name, URL and redaction rules |
 | `test/package.mjs` | Packaging: one `bin`, runtime dependencies, versions in step |
 | `test/skills.mjs` | Skills over MCP: tools, prompts, resources, path safety, bundle matches the pin |
 | `test/smoke.mjs` | Handshake, tool registration, read-only mode |
@@ -366,6 +369,8 @@ npm run check-skills      # exit 1 if src/skills.generated.ts differs from the p
 | `test/elicit.mjs` | Token prompt: accept, refuse acknowledgement, decline, no support |
 | `test/newtools.mjs` | Validator, Dockerfile generator, registry, deployments, relay and matchmaker tools against a local mock API |
 | `test/http.mjs` | Self-hosted HTTP server: discovery without a token, per-request tokens, foreign credentials |
+| `test/spec.mjs` | Every endpoint and request-body field the server sends is in `spec/` (write tools checked by dry run) |
+| `test/snapshot.mjs` | Tool names, descriptions, schemas and the instructions match `test/tools.snapshot.json`; `npm run snapshot:update` after a deliberate change |
 | `test/live-check.mjs` | Not in `npm test`. Runs against the real API with a token from a non-production organization |
 
 Design decisions, the security model, and what's deliberately out of scope are in [DESIGN.md](DESIGN.md).

@@ -126,13 +126,39 @@ const TERMINAL_BAD = ['ERROR', 'STATUS_ERROR', 'TERMINATED', 'STATUS_TERMINATED'
 
 type ToolResult = {
   content: Array<{ type: 'text'; text: string }>;
+  /** The same payload as the JSON text, for clients that read structured results. */
+  structuredContent?: Record<string, unknown>;
   isError?: boolean;
 };
 
 function ok(payload: unknown, notice?: string): ToolResult {
   const body = typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2);
+  const structured =
+    payload !== null && typeof payload === 'object' && !Array.isArray(payload)
+      ? (JSON.parse(body) as Record<string, unknown>)
+      : undefined;
   return {
     content: [{ type: 'text', text: notice ? `${body}\n\nNOTE: ${notice}` : body }],
+    ...(structured ? { structuredContent: structured } : {}),
+  };
+}
+
+/**
+ * Strips the API token from a whole result, success or failure. Errors were
+ * already redacted at the source; this covers anything the API echoes back in
+ * a successful response, and any text a tool builds from it.
+ */
+function scrubToken(result: ToolResult, token: string | undefined): ToolResult {
+  if (!token || token.length < 8) return result;
+  const needles = [token, token.replace(/-/g, '')].filter((n, i, all) => n.length >= 8 && all.indexOf(n) === i);
+  const clean = (text: string) => needles.reduce((t, n) => redact(t, n), text);
+  const hit = (text: string) => needles.some((n) => text.includes(n));
+  const structuredText = result.structuredContent ? JSON.stringify(result.structuredContent) : '';
+  if (!result.content.some((c) => hit(c.text)) && !hit(structuredText)) return result;
+  return {
+    ...result,
+    content: result.content.map((c) => ({ ...c, text: clean(c.text) })),
+    ...(result.structuredContent ? { structuredContent: JSON.parse(clean(structuredText)) } : {}),
   };
 }
 
@@ -481,9 +507,10 @@ export function registerTools(
   // Every result names the API host it came from, first, so a session pointed
   // at a custom EDGEGAP_BASE_URL can never be mistaken for production.
   const label = hostLabel(config);
+  // ...and never carries the API token, whatever the API echoed back.
   const tool = ((name: string, def: unknown, cb: (...a: unknown[]) => Promise<ToolResult>) =>
     server.registerTool(name, def as never, (async (...a: unknown[]) =>
-      withHost(await cb(...a), label)) as never)) as unknown as typeof server.registerTool;
+      withHost(scrubToken(await cb(...a), auth.current), label)) as never)) as unknown as typeof server.registerTool;
 
   // ---------------------------------------------------------------- 0 ----
   // No token, no network: describes this server's own configuration, so an
@@ -1092,8 +1119,13 @@ export function registerTools(
             .array(z.string().min(1).max(40))
             .optional()
             .describe(`Extra tags for filtering later, e.g. ["agent-test"]. "${AGENT_TAG}" is always added.`),
-          cpu_units: z.number().int().min(256).optional().describe('Override the version CPU.'),
-          memory_mb: z.number().int().min(256).optional().describe('Override the version memory.'),
+          cpu_units: z
+            .number()
+            .int()
+            .min(256)
+            .optional()
+            .describe('Override the version CPU (with memory_mb). Not in the published v2 spec, so the API may ignore it; a version with the size you need is the reliable way.'),
+          memory_mb: z.number().int().min(256).optional().describe('Override the version memory (with cpu_units). Same caveat as cpu_units.'),
           dry_run: dryRunParam,
         },
         annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true },
@@ -1185,6 +1217,13 @@ export function registerTools(
             status: 'starting',
             tags,
             ...autoStop(version.max_duration),
+            // "resources" is not in the published v2 deploy schema
+            // (test/spec.mjs). Say so rather than promise the override.
+            resources_note: body.resources
+              ? 'cpu_units/memory_mb were sent, but the published v2 API does not document a per-deployment ' +
+                'override, so the deployment may run with the version\'s size. For a different size, create a ' +
+                'version with it.'
+              : undefined,
             next_step: `Call edgegap_wait_for_deployment with request_id ${res.request_id}.`,
           });
         })

@@ -122,6 +122,9 @@ const mock = http.createServer((req, res) => {
         return send(200, { name: 'my-game', is_active: JSON.parse(body).is_active });
       case 'PATCH /v1/app/my-game/version/build-42':
         return send(200, { success: true, version: { name: 'build-42' } });
+      // A successful response that echoes the caller's token back.
+      case 'GET /v1/app/my-game/version/echo-1':
+        return send(200, { name: 'echo-1', docker_repository: 'docker.io', docker_image: `me/srv-${req.headers.authorization?.replace(/^token /, '')}`, docker_tag: 'b1', max_duration: 60 });
       case 'GET /v1/app/my-game/version/full-1':
         return send(200, {
           name: 'full-1', is_active: true, docker_repository: 'registry.edgegap.com', docker_image: 'my-org-abc123/my-game-server',
@@ -778,6 +781,15 @@ r = json(await acall('edgegap_revoke_relay_user', { session_id: 'abc123-S', user
 check('revoke_relay_user: posts the player token', JSON.stringify(calls.find((x) => x.method === 'POST')?.body) === JSON.stringify({ session_id: 'abc123-S', authorization_token: 901 }) && r.revoked === 901);
 res = await acall('edgegap_revoke_relay_user', { session_id: '*', user_authorization_token: 1 });
 check('revoke_relay_user: a wildcard session_id is refused', res.isError === true);
+
+// ----------------------------------------- 12. results: masked, structured ----
+console.log('\n12. every result masked and structured');
+res = await acall('edgegap_get_app_version', { application: 'my-game', version: 'echo-1' });
+check('a token echoed in a successful response is masked', !text(res).includes(REAL) && !JSON.stringify(res.structuredContent ?? {}).includes(REAL) && /<redacted-token>/.test(text(res)), text(res).slice(0, 200));
+res = await acall('edgegap_list_locations', {});
+check('results carry structuredContent equal to the JSON text', res.structuredContent?.locations?.length === 2 && JSON.stringify(res.structuredContent) === JSON.stringify(JSON.parse(res.content.at(-1).text)));
+res = await acall('edgegap_update_app_version', { application: 'my-game', version: 'build-42' });
+check('errors carry no structuredContent', res.isError && res.structuredContent === undefined);
 await ac.close();
 
 // ------------------------------------------------- token prefix in env ----
