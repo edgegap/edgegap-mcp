@@ -23,7 +23,7 @@ const totalFiles = SKILLS_PACK.skills.reduce((n, s) => n + s.files.length, 0);
 console.log('\nbundle');
 const pin = readFileSync('scripts/skills-pin.txt', 'utf8').trim();
 check('bundle is the pinned commit', SKILLS_PACK.commit === pin, `${SKILLS_PACK.commit} vs ${pin}`);
-check('bundle has the core skills', ['edgegap', 'edgegap-unity', 'edgegap-ngo', 'edgegap-fishnet', 'edgegap-purrnet', 'edgegap-fusion', 'edgegap-manus', 'edgegap-unreal', 'edgegap-eos-voice'].every((n) => SKILLS_PACK.skills.some((s) => s.name === n)));
+check('bundle has the core skills', ['edgegap', 'edgegap-unity', 'edgegap-ngo', 'edgegap-fishnet', 'edgegap-purrnet', 'edgegap-fusion', 'edgegap-manus', 'edgegap-unreal', 'edgegap-eos-voice', 'edgegap-fusion-simplefps', 'edgegap-godot', 'edgegap-colyseus', 'edgegap-nakama'].every((n) => SKILLS_PACK.skills.some((s) => s.name === n)));
 check('every skill starts with its SKILL.md', SKILLS_PACK.skills.every((s) => s.files[0].path === 'SKILL.md' && s.files[0].content.includes(`name: ${s.name}`)));
 check('no evals, scripts or fixtures bundled', SKILLS_PACK.skills.every((s) => s.files.every((f) => !/^(evals|scripts|fixtures)\//.test(f.path))));
 check('no Windows line endings', SKILLS_PACK.skills.every((s) => s.files.every((f) => !f.content.includes('\r\n'))));
@@ -67,6 +67,10 @@ r = await c.callTool({ name: 'edgegap_get_skill', arguments: { skill: 'edgegap-f
 check('edgegap-fusion loads', !r.isError && body(r).startsWith('edgegap-fusion'));
 r = await c.callTool({ name: 'edgegap_get_skill', arguments: { skill: 'edgegap-fusion', file: 'assets/br200/edgegap/start-server.sh' } });
 check('edgegap-fusion serves its shell scripts', !r.isError && body(r).includes('#!'));
+r = await c.callTool({ name: 'edgegap_get_skill', arguments: { skill: 'edgegap-nakama', file: 'assets/nakama/go.mod' } });
+check('edgegap-nakama serves its Go module', !r.isError && body(r).includes('nakama-edgegap'));
+r = await c.callTool({ name: 'edgegap_get_skill', arguments: { skill: 'edgegap-godot' } });
+check('edgegap-godot loads', !r.isError && body(r).startsWith('edgegap-godot'));
 r = await c.callTool({ name: 'edgegap_get_skill', arguments: { skill: 'edgegap-manus', file: 'assets/backend/joinToken.ts' } });
 check('TypeScript templates are bundled', !r.isError && body(r).includes('joinToken.ts'));
 
@@ -110,7 +114,7 @@ check('server instructions point at the skills', /edgegap_get_skill/.test(c.getI
 const instructions = c.getInstructions() ?? '';
 check('instructions open with the skills line', instructions.startsWith('Before acting, read edgegap-skill://edgegap/SKILL.md'), instructions.slice(0, 80));
 const linked = [...new Set(instructions.match(/edgegap-skill:\/\/[^\s),]+/g) ?? [])];
-check('instructions link the core, Unity, NGO, FishNet, PurrNet, Fusion, Unreal, EOS voice and Manus skills', ['edgegap', 'edgegap-unity', 'edgegap-ngo', 'edgegap-fishnet', 'edgegap-purrnet', 'edgegap-fusion', 'edgegap-manus', 'edgegap-unreal', 'edgegap-eos-voice'].every((s) => linked.includes(`edgegap-skill://${s}/SKILL.md`)), linked.join(' '));
+check('instructions link the core, Unity, NGO, FishNet, PurrNet, Fusion, Simple FPS, Unreal, EOS voice, Godot, Colyseus, Nakama and Manus skills', ['edgegap', 'edgegap-unity', 'edgegap-ngo', 'edgegap-fishnet', 'edgegap-purrnet', 'edgegap-fusion', 'edgegap-manus', 'edgegap-unreal', 'edgegap-eos-voice', 'edgegap-fusion-simplefps', 'edgegap-godot', 'edgegap-colyseus', 'edgegap-nakama'].every((s) => linked.includes(`edgegap-skill://${s}/SKILL.md`)), linked.join(' '));
 for (const uri of linked) {
   const got = await c.readResource({ uri }).catch(() => undefined);
   check(`linked resource ${uri} resolves`, Boolean(got?.contents?.[0]?.text?.includes('name: ')));
