@@ -157,7 +157,7 @@ To keep your API token on your own machine, run the server locally instead. Leav
 }
 ```
 
-Needs Node 18+. Pin a version in production (`@edgegap/mcp@0.7.1`) rather than floating on latest. Registered in the official MCP registry as `dev.edgegap/mcp`.
+Needs Node 18+. Pin a version in production (`@edgegap/mcp@0.7.2`) rather than floating on latest. Registered in the official MCP registry as `dev.edgegap/mcp`.
 
 The local server can also limit what an agent can do. These variables have no effect on the hosted endpoint at `mcp.edgegap.dev`:
 
@@ -172,7 +172,7 @@ The local server can also limit what an agent can do. These variables have no ef
 
 ## 📚 Skills
 
-The server includes the [Edgegap agent skills](https://github.com/edgegap/edgegap-agent-skills): tested, step-by-step workflows for getting a multiplayer game online, with templates (Dockerfiles, matchmaker configs, Unity C# and Unreal C++ drop-ins) and known pitfalls. Any agent connected to Edgegap MCP gets them, with no separate install and no token needed, and is told to load the matching skill before working on a game project.
+The server includes the [Edgegap agent skills](https://github.com/edgegap/llm-agent-skills): tested, step-by-step workflows for getting a multiplayer game online, with templates (Dockerfiles, matchmaker configs, Unity C# and Unreal C++ drop-ins) and known pitfalls. Any agent connected to Edgegap MCP gets them, with no separate install and no token needed, and is told to load the matching skill before working on a game project.
 
 | Skill | For |
 | --- | --- |
@@ -352,7 +352,7 @@ npm test                  # mock-API tests; none reach Edgegap
 npm run typecheck:worker
 ```
 
-To update the bundled skills to the latest commit of [edgegap-agent-skills](https://github.com/edgegap/edgegap-agent-skills), then release as usual:
+To update the bundled skills to the latest commit of [llm-agent-skills](https://github.com/edgegap/llm-agent-skills), then release as usual:
 
 ```bash
 npm run sync-skills -- --ref main

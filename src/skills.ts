@@ -1,7 +1,7 @@
 /**
  * The Edgegap agent skills, served by this MCP server.
  *
- * The skills (github.com/edgegap/edgegap-agent-skills) are the workflows,
+ * The skills (github.com/edgegap/llm-agent-skills) are the workflows,
  * templates and pitfalls an agent needs to take a game from "works on my
  * machine" to matched players on a dedicated server. Serving them here means
  * every agent connected to Edgegap MCP has them, whether or not it can install
@@ -64,6 +64,8 @@ export function mimeType(path: string): string {
   if (/\.(h|cpp)$/.test(path)) return 'text/x-c++src';
   if (path.endsWith('.xml')) return 'application/xml';
   if (/\.(ts|mjs)$/.test(path)) return 'text/javascript';
+  if (path.endsWith('.html')) return 'text/html';
+  if (path.endsWith('.css')) return 'text/css';
   return 'text/plain';
 }
 
