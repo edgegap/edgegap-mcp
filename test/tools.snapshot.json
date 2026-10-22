@@ -82,7 +82,7 @@
               "maximum": 9007199254740991
             },
             "expansions": {
-              "description": "Rule relaxations after a player has waited this long, e.g. [{after_seconds: 30, min_team_size: 1}].",
+              "description": "Rule relaxations after a player has waited this long, e.g. [{after_seconds: 20, min_team_size: 1}]. Keep each below ticket_expiration.",
               "type": "array",
               "items": {
                 "type": "object",
@@ -109,7 +109,7 @@
               }
             },
             "ticket_expiration": {
-              "description": "Default \"5m\".",
+              "description": "Default \"30s\", so a developer testing alone is matched or told to retry within 30 s instead of waiting minutes. Raise it only for production queues.",
               "type": "string"
             },
             "inspect": {

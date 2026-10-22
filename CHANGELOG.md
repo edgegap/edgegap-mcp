@@ -2,6 +2,10 @@
 
 Published versions of `@edgegap/mcp`, which also run on the hosted endpoint at `mcp.edgegap.dev`. Dates are npm publish dates. Versions merged but never published (0.5.8, 0.6.0) shipped as part of the next release. Older entries are summarised from the commit history.
 
+## 0.8.0 (2026-10-22)
+
+- `edgegap_build_matchmaker_config` defaults `ticket_expiration` to `"30s"` (was `"5m"`). On matchmaker 3.3.2 a lone or partial ticket may only be matched when it nears expiry, so a developer testing alone waited about 5 minutes and gave up. The "is short" caution now starts below 20 s instead of 60 s, and a new caution flags any expansion whose `after_seconds` is at or past the expiration (it never applies). Pass `ticket_expiration` to keep longer production queues.
+
 ## 0.7.2 (2026-10-22)
 
 - Skills pack 0.15.1 (llm-agent-skills `6bd8353`, 21 skills). Every skill now tags server images and names app versions with the same UTC timestamp, `YYYYMMDD-HHMM` (e.g. `20261022-1430`), instead of `v1`, `v2` or `latest`, so anyone can see when a server was last updated: agent rules, matchmaker templates, build steps, the BR200 and Simple FPS `package.sh` defaults and the Manus GitHub workflow.
