@@ -1,6 +1,13 @@
 # Changelog
 
-Published versions of `@edgegap/mcp`, which also run on the hosted endpoint at `mcp.edgegap.dev`. Dates are npm publish dates. Versions merged but never published (0.5.8, 0.6.0) shipped as part of the next release. Older entries are summarised from the commit history.
+Published versions of `@edgegap/mcp`, which also run on the hosted endpoint at `mcp.edgegap.dev`. Dates are npm publish dates. Versions merged but never published (0.5.8, 0.6.0, 0.8.0) shipped as part of the next release. Older entries are summarised from the commit history.
+
+## 0.9.0 (2026-10-22)
+
+- New `edgegap_update_skills`: checks whether the Edgegap skills installed in the developer's agent are current, skill by skill, against GitHub main. The local server finds skills CLI installs (user-wide and project), the Claude Code plugin `edgegap@edgegap` and skills copied by hand into `~/.claude/skills`, `~/.agents/skills` and similar folders. With `apply: true` it runs `npx skills update` for the Edgegap skills only or `claude plugin update`, and rewrites hand-copied skills from this release's bundle, keeping files the developer added and refusing symlinks and git checkouts. Refused in read-only mode. On the hosted server it compares the versions an agent passes in `installed_versions`. It never downloads skill text.
+- Skills version check: `edgegap_list_skills` reports `latest_pack` from GitHub and whether the served pack is the latest; `edgegap_get_skill` adds a note under the header when it is not. One request for a version number, cached for an hour, 3 s timeout; `EDGEGAP_SKILLS_CHECK=off` turns it off. `edgegap_list_skills` is now marked `openWorldHint`.
+- One-click install: `manifest.json` builds an MCPB bundle (`npm run bundle`) of the local server with its runtime dependencies, for Claude Desktop and other MCPB clients. Its settings set the token (kept in the OS secure storage), read-only mode, the allowlist, the max duration ceiling and the deployment cap. `.github/workflows/mcpb.yml` attaches `edgegap-mcp.mcpb` to every GitHub release. An unexpanded `${user_config.*}` value in the environment counts as unset.
+- Tests: `test/updateskills.mjs` (fake home folder and a local stand-in for GitHub), and `test/package.mjs` keeps `manifest.json`'s version and tool list in step with the package.
 
 ## 0.8.0 (2026-10-22)
 

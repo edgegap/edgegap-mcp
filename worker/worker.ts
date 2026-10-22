@@ -39,6 +39,7 @@ import type { McpServer as McpServerV1 } from '@modelcontextprotocol/sdk/server/
 import { EdgegapClient } from '../src/client.js';
 import { StaticTokenProvider } from '../src/auth.js';
 import { registerTools, serverInstructions } from '../src/tools.js';
+import { skillsCheckFromEnv } from '../src/skillsversion.js';
 import type { Config } from '../src/config.js';
 import { extractToken, unavailableMessage } from '../src/hosted.js';
 import { VERSION } from '../src/version.js';
@@ -49,6 +50,8 @@ export interface Env extends TelemetryEnv {
   EDGEGAP_MAX_DURATION_MINUTES?: string;
   EDGEGAP_MAX_AGENT_DEPLOYMENTS?: string;
   EDGEGAP_READ_ONLY?: string;
+  /** "off" stops the skill tools from reading the latest skills version on GitHub. */
+  EDGEGAP_SKILLS_CHECK?: string;
 }
 
 /**
@@ -130,7 +133,8 @@ export default {
             (server as unknown as McpServerV1).server.getClientVersion?.()?.name,
         }),
         config,
-        auth
+        auth,
+        { skillsCheck: skillsCheckFromEnv({ EDGEGAP_SKILLS_CHECK: env.EDGEGAP_SKILLS_CHECK }) }
       );
 
       // After registration, so the SDK sees every tool.

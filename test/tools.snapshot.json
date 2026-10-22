@@ -1079,7 +1079,7 @@
       {
         "name": "edgegap_list_skills",
         "title": "List the Edgegap agent skills",
-        "description": "List the Edgegap agent skills: tested, step-by-step workflows for getting a multiplayer game online on Edgegap, with templates (Dockerfiles, matchmaker configs, Unity C# and Unreal C++ drop-ins) and known pitfalls. Before working on a game project, load the matching skill with edgegap_get_skill: edgegap-ngo for Unity with Netcode for GameObjects, edgegap-fishnet for Unity with FishNet, edgegap-purrnet for Unity with PurrNet, edgegap-fusion for Unity with Photon Fusion 2, edgegap-unity for other Unity projects, edgegap-unreal for Unreal Engine (edgegap-eos-voice to add voice chat to it), edgegap-fusion-simplefps for the Photon Simple FPS sample, edgegap-godot for Godot 4 with a Godot server, edgegap-colyseus for a Colyseus server, edgegap-nakama for a game with a Nakama backend, edgegap-playfab for a game that keeps PlayFab Matchmaking, edgegap-threejs for a Three.js or other browser game with its own Node.js server, edgegap-manus for a browser game built with Manus, edgegap for any other engine or platform questions; it routes to the rest. No API call.",
+        "description": "List the Edgegap agent skills: tested, step-by-step workflows for getting a multiplayer game online on Edgegap, with templates (Dockerfiles, matchmaker configs, Unity C# and Unreal C++ drop-ins) and known pitfalls. Before working on a game project, load the matching skill with edgegap_get_skill: edgegap-ngo for Unity with Netcode for GameObjects, edgegap-fishnet for Unity with FishNet, edgegap-purrnet for Unity with PurrNet, edgegap-fusion for Unity with Photon Fusion 2, edgegap-unity for other Unity projects, edgegap-unreal for Unreal Engine (edgegap-eos-voice to add voice chat to it), edgegap-fusion-simplefps for the Photon Simple FPS sample, edgegap-godot for Godot 4 with a Godot server, edgegap-colyseus for a Colyseus server, edgegap-nakama for a game with a Nakama backend, edgegap-playfab for a game that keeps PlayFab Matchmaking, edgegap-threejs for a Three.js or other browser game with its own Node.js server, edgegap-manus for a browser game built with Manus, edgegap for any other engine or platform questions; it routes to the rest. Also says whether a newer skills pack is on GitHub (reads one version number, no Edgegap API call).",
         "inputSchema": {
           "type": "object",
           "properties": {},
@@ -1088,7 +1088,7 @@
         "annotations": {
           "readOnlyHint": true,
           "idempotentHint": true,
-          "openWorldHint": false
+          "openWorldHint": true
         }
       },
       {
@@ -1260,6 +1260,37 @@
         }
       },
       {
+        "name": "edgegap_update_skills",
+        "title": "Check and update the installed Edgegap skills",
+        "description": "Check whether the Edgegap agent skills installed in the developer's agent are the latest, and update them. Finds installs made with the skills CLI (user-wide or this project), the Claude Code plugin edgegap@edgegap, and skills copied by hand into an agent's skills folder, and compares each skill with the latest on GitHub. Without apply it only checks and changes nothing. With apply=true it runs each outdated install's own updater (npx skills update for the Edgegap skills only, or claude plugin update) and rewrites hand-copied skills from the files bundled in this server; ask the developer before applying. Skill text is never downloaded by this tool. The skills served by edgegap_get_skill need no update here.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "apply": {
+              "description": "Run the updates for outdated installs. Omit or false to only check.",
+              "type": "boolean"
+            },
+            "installed_versions": {
+              "description": "Skill name → version of skills you have loaded from somewhere this server cannot see, e.g. {\"edgegap-unity\": \"0.1.8\"}. The version is metadata.version in the SKILL.md frontmatter.",
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          },
+          "$schema": "http://json-schema.org/draft-07/schema#"
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": true
+        }
+      },
+      {
         "name": "edgegap_validate_server_config",
         "title": "Validate a game server Dockerfile and port config",
         "description": "Check a game server Dockerfile and the ports/resources you intend to register against what Edgegap requires, BEFORE building and pushing. Catches the failures that otherwise only show up after a build, push, version and deploy: ARM or Windows images (Edgegap runs linux/amd64), Unreal running as root, missing Unity -batchmode -nographics, a server bound to localhost, EXPOSE ports that do not match the version ports, a protocol that does not match the netcode transport, the \"latest\" tag, and bad CPU/memory ratios. Pass the Dockerfile text (read it from disk first). If there is no Dockerfile yet, call edgegap_generate_dockerfile instead. Makes no API calls.",
@@ -1390,6 +1421,7 @@
       "edgegap_list_registry_tags",
       "edgegap_list_relay_sessions",
       "edgegap_list_skills",
+      "edgegap_update_skills",
       "edgegap_validate_server_config",
       "edgegap_wait_for_deployment"
     ]

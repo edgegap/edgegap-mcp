@@ -141,6 +141,10 @@ Install remote Edgegap MCP server in your agent's virtualized environment (never
 }
 ```
 
+### One-Click Install (Claude Desktop)
+
+Download [edgegap-mcp.mcpb](https://github.com/edgegap/llm-mcp-server/releases/latest/download/edgegap-mcp.mcpb) and open it: Claude Desktop installs the local server as an extension and asks for your API token, which it keeps in the operating system's secure storage. The extension's settings also hold read-only mode, the application allowlist, the max duration ceiling and the deployment cap (the variables below). Each [release](https://github.com/edgegap/llm-mcp-server/releases) attaches the bundle, built from that release's code. Any other app that installs MCPB bundles works the same way.
+
 ### Local Server
 
 To keep your API token on your own machine, run the server locally instead. Leave the token out and your agent asks you for it on first use, holding it in memory only for that session:
@@ -157,7 +161,7 @@ To keep your API token on your own machine, run the server locally instead. Leav
 }
 ```
 
-Needs Node 18+. Pin a version in production (`@edgegap/mcp@0.8.0`) rather than floating on latest. Registered in the official MCP registry as `dev.edgegap/mcp`.
+Needs Node 18+. Pin a version in production (`@edgegap/mcp@0.9.0`) rather than floating on latest. Registered in the official MCP registry as `dev.edgegap/mcp`.
 
 The local server can also limit what an agent can do. These variables have no effect on the hosted endpoint at `mcp.edgegap.dev`:
 
@@ -169,6 +173,7 @@ The local server can also limit what an agent can do. These variables have no ef
 | `EDGEGAP_MAX_DURATION_MINUTES` | `60` | Ceiling on `max_duration` the agent may set on a version. |
 | `EDGEGAP_MAX_AGENT_DEPLOYMENTS` | `5` | `edgegap_deploy` refuses while this many deployments tagged `edgegap-mcp` are running. `0` turns the cap off. |
 | `EDGEGAP_TIMEOUT_MS` | `30000` | Per-request HTTP timeout. |
+| `EDGEGAP_SKILLS_CHECK` | `on` | Set to `off` and the skill tools never read the latest skills version from GitHub. |
 
 ## 📚 Skills
 
@@ -198,7 +203,9 @@ They're served three ways, so every MCP client can reach them:
 - **Prompts:** one per skill, named after it. In Claude Code they show up as slash commands, e.g. `/mcp__edgegap__edgegap-unity`.
 - **Resources:** one per file, at `edgegap-skill://<skill>/<path>`, e.g. `edgegap-skill://edgegap-unity/references/deploy.md`.
 
-Each release bundles the skills at the commit pinned in `scripts/skills-pin.txt`; `edgegap_context` reports which pack is loaded. If you also installed the skills locally (the Claude Code plugin or `npx skills add`), they're the same pack.
+Each release bundles the skills at the commit pinned in `scripts/skills-pin.txt`; `edgegap_context` reports which pack is loaded. `edgegap_list_skills` also reads the latest pack version from GitHub (one version number, cached for an hour; `EDGEGAP_SKILLS_CHECK=off` turns it off) and says when a newer one is out, and `edgegap_get_skill` adds the same note under a skill's header.
+
+**Keeping installed skills current.** If you also installed the skills in your agent (the Claude Code plugin `edgegap@edgegap`, `npx skills add edgegap/llm-agent-skills`, or folders copied into `~/.claude/skills`), `edgegap_update_skills` compares each one with the latest on GitHub. On the local server it finds those installs itself; with `apply: true` it runs `npx skills update` (Edgegap skills only) or `claude plugin update`, and rewrites hand-copied skills from the files bundled in this release, keeping files you added and leaving symlinks and git checkouts alone. It never downloads skill text. The hosted server cannot see your disk: pass the versions you have loaded in `installed_versions` and it says which are behind and how to update them.
 
 ## 🧰 Tools
 

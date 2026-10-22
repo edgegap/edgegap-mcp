@@ -1,0 +1,233 @@
+{
+  "manifest_version": "0.3",
+  "name": "edgegap-mcp",
+  "display_name": "Edgegap",
+  "version": "0.9.0",
+  "description": "Deploy and run multiplayer game servers on Edgegap from Claude: dedicated servers, matchmaking, relays and the Edgegap agent skills.",
+  "long_description": "The Edgegap MCP server, running on your own computer. Check a server Dockerfile, push the image, create the app version, deploy dedicated game servers near your players, read their logs and metrics, build a matchmaker config, and load the Edgegap agent skills (Unity, NGO, FishNet, PurrNet, Photon Fusion, Unreal, Godot, Colyseus, Nakama, PlayFab, Three.js, Manus). Guardrails: dry_run on every write tool, a cap on agent deployments, a max_duration ceiling, refusal of \"latest\" image tags and of the API token in containers, and the token scrubbed from every result. Your token stays on this computer and is sent only to api.edgegap.com.",
+  "author": {
+    "name": "Edgegap",
+    "url": "https://edgegap.com"
+  },
+  "homepage": "https://edgegap.com",
+  "documentation": "https://github.com/edgegap/llm-mcp-server#readme",
+  "support": "https://github.com/edgegap/llm-mcp-server/issues",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/edgegap/llm-mcp-server"
+  },
+  "license": "Apache-2.0",
+  "icon": "icon.png",
+  "keywords": [
+    "edgegap",
+    "game servers",
+    "multiplayer",
+    "dedicated servers",
+    "matchmaking",
+    "unity",
+    "unreal",
+    "godot"
+  ],
+  "server": {
+    "type": "node",
+    "entry_point": "dist/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/dist/index.js"
+      ],
+      "env": {
+        "EDGEGAP_API_TOKEN": "${user_config.api_token}",
+        "EDGEGAP_READ_ONLY": "${user_config.read_only}",
+        "EDGEGAP_APP_ALLOWLIST": "${user_config.app_allowlist}",
+        "EDGEGAP_MAX_DURATION_MINUTES": "${user_config.max_duration_minutes}",
+        "EDGEGAP_MAX_AGENT_DEPLOYMENTS": "${user_config.max_agent_deployments}"
+      }
+    }
+  },
+  "user_config": {
+    "api_token": {
+      "type": "string",
+      "title": "Edgegap API token",
+      "description": "From https://app.edgegap.com/user-settings?tab=tokens (the UUID only). It is organization-wide, so use a non-production organization for unattended agents.",
+      "sensitive": true,
+      "required": true
+    },
+    "read_only": {
+      "type": "boolean",
+      "title": "Read-only",
+      "description": "Hide every tool that changes something on Edgegap.",
+      "default": false,
+      "required": false
+    },
+    "app_allowlist": {
+      "type": "string",
+      "title": "Application allowlist",
+      "description": "Comma-separated application names the agent may create versions in and deploy. Empty = all.",
+      "default": "",
+      "required": false
+    },
+    "max_duration_minutes": {
+      "type": "number",
+      "title": "Max duration ceiling (minutes)",
+      "description": "Highest max_duration the agent may set on a version.",
+      "default": 60,
+      "min": 1,
+      "max": 1440,
+      "required": false
+    },
+    "max_agent_deployments": {
+      "type": "number",
+      "title": "Max agent deployments",
+      "description": "Deploy is refused while this many agent-tagged deployments are running. 0 = no cap.",
+      "default": 5,
+      "min": 0,
+      "max": 1000,
+      "required": false
+    }
+  },
+  "tools": [
+    {
+      "name": "edgegap_authorize_relay_user",
+      "description": "Add a player to a relay session"
+    },
+    {
+      "name": "edgegap_build_matchmaker_config",
+      "description": "Build a basic matchmaker configuration"
+    },
+    {
+      "name": "edgegap_context",
+      "description": "Show this Edgegap MCP server's configuration"
+    },
+    {
+      "name": "edgegap_create_app",
+      "description": "Create an Edgegap application"
+    },
+    {
+      "name": "edgegap_create_app_version",
+      "description": "Create an application version"
+    },
+    {
+      "name": "edgegap_create_relay_session",
+      "description": "Create a relay session (host-client games only)"
+    },
+    {
+      "name": "edgegap_delete_registry_tag",
+      "description": "Delete one image tag from the Edgegap registry"
+    },
+    {
+      "name": "edgegap_delete_relay_session",
+      "description": "Delete a relay session"
+    },
+    {
+      "name": "edgegap_deploy",
+      "description": "Deploy a game server"
+    },
+    {
+      "name": "edgegap_generate_dockerfile",
+      "description": "Generate a game server Dockerfile"
+    },
+    {
+      "name": "edgegap_get_app_version",
+      "description": "Get one application version"
+    },
+    {
+      "name": "edgegap_get_deployment",
+      "description": "Get deployment status"
+    },
+    {
+      "name": "edgegap_get_deployment_logs",
+      "description": "Get container logs for a deployment"
+    },
+    {
+      "name": "edgegap_get_deployment_metrics",
+      "description": "Get CPU, memory and network use of a deployment"
+    },
+    {
+      "name": "edgegap_get_registry_credentials",
+      "description": "Get Edgegap container registry push credentials"
+    },
+    {
+      "name": "edgegap_get_relay_session",
+      "description": "Get a relay session"
+    },
+    {
+      "name": "edgegap_get_skill",
+      "description": "Load an Edgegap agent skill"
+    },
+    {
+      "name": "edgegap_list_app_versions",
+      "description": "List versions of an application"
+    },
+    {
+      "name": "edgegap_list_apps",
+      "description": "List Edgegap applications"
+    },
+    {
+      "name": "edgegap_list_deployments",
+      "description": "List running deployments"
+    },
+    {
+      "name": "edgegap_list_locations",
+      "description": "List where servers can run"
+    },
+    {
+      "name": "edgegap_list_ping_beacons",
+      "description": "List ping beacons"
+    },
+    {
+      "name": "edgegap_list_registry_tags",
+      "description": "List image tags in the Edgegap registry"
+    },
+    {
+      "name": "edgegap_list_relay_sessions",
+      "description": "List relay sessions"
+    },
+    {
+      "name": "edgegap_list_skills",
+      "description": "List the Edgegap agent skills"
+    },
+    {
+      "name": "edgegap_revoke_relay_user",
+      "description": "Remove a player from a relay session"
+    },
+    {
+      "name": "edgegap_stop_deployment",
+      "description": "Stop a deployment"
+    },
+    {
+      "name": "edgegap_update_app",
+      "description": "Turn an application on or off"
+    },
+    {
+      "name": "edgegap_update_app_version",
+      "description": "Update an application version"
+    },
+    {
+      "name": "edgegap_update_skills",
+      "description": "Check and update the Edgegap skills installed in your agent"
+    },
+    {
+      "name": "edgegap_validate_server_config",
+      "description": "Validate a game server Dockerfile and port config"
+    },
+    {
+      "name": "edgegap_wait_for_deployment",
+      "description": "Wait for a deployment to become ready"
+    }
+  ],
+  "prompts_generated": true,
+  "compatibility": {
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ],
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
+  },
+  "privacy_policies": [
+    "https://edgegap.com/legal"
+  ]
+}
