@@ -395,11 +395,17 @@ check('delete succeeds on 204', !res.isError && calls.some((x) => x.method === '
 // ----------------------------------------------------------- matchmaker ----
 console.log('\nmatchmaker');
 const mm = { profile_name: 'casual-2v2', application: 'my-game', version: 'build-42', team_count: 2, min_team_size: 2, max_team_size: 2 };
-r = json(await c.callTool({ name: 'edgegap_build_matchmaker_config', arguments: { ...mm, max_latency_ms: 150, expansions: [{ after_seconds: 30, max_latency_ms: 250 }] } }));
+r = json(await c.callTool({ name: 'edgegap_build_matchmaker_config', arguments: { ...mm, max_latency_ms: 150, expansions: [{ after_seconds: 20, max_latency_ms: 250 }] } }));
 const prof = r.config?.profiles?.['casual-2v2'];
 check('builds a profile pointing at the version', prof?.application?.name === 'my-game' && prof.application.version === 'build-42');
 check('player_count rule', prof?.rules.initial.match_size.type === 'player_count' && prof.rules.initial.match_size.attributes.team_count === 2);
-check('latency rule and expansion', prof?.rules.initial.beacons.attributes.max_latency === 150 && prof.rules.expansions['30'].beacons.max_latency === 250);
+check('latency rule and expansion', prof?.rules.initial.beacons.attributes.max_latency === 150 && prof.rules.expansions['20'].beacons.max_latency === 250);
+check('ticket expiration defaults to 30s', prof?.ticket_expiration_period === '30s', prof?.ticket_expiration_period);
+check('30s expiration raises no caution', !(r.cautions ?? []).some((s) => /is short/.test(s)), JSON.stringify(r.cautions));
+r = json(await c.callTool({ name: 'edgegap_build_matchmaker_config', arguments: { ...mm, min_team_size: 1, verify_version: false, expansions: [{ after_seconds: 30, min_team_size: 1 }] } }));
+check('expansion at or after the expiration is flagged', (r.cautions ?? []).some((s) => /never applies/.test(s)), JSON.stringify(r.cautions));
+r = json(await c.callTool({ name: 'edgegap_build_matchmaker_config', arguments: { ...mm, verify_version: false, ticket_expiration: '10s' } }));
+check('expiration under 20s is flagged as short', (r.cautions ?? []).some((s) => /is short/.test(s)), JSON.stringify(r.cautions));
 res = await c.callTool({ name: 'edgegap_build_matchmaker_config', arguments: { ...mm, version: 'nope' } });
 check('missing version is reported', res.isError && /not found/.test(text(res)));
 res = await c.callTool({ name: 'edgegap_build_matchmaker_config', arguments: { ...mm, version: 'no-ports' } });

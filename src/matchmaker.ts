@@ -51,12 +51,14 @@ export function buildMatchmakerConfig(input: MatchmakerInput) {
     problems.push(`profile_name "${input.profile_name}" should be letters, digits, "-" or "_". Game clients send it on every ticket.`);
   }
 
-  const expiration = input.ticket_expiration ?? '5m';
+  // 30s by default: a lone or partial ticket may only be matched when it nears
+  // expiry, so with minutes a developer testing alone gives up before a server comes.
+  const expiration = input.ticket_expiration ?? '30s';
   const removal = input.ticket_removal ?? '1m';
   for (const [field, value] of [['ticket_expiration', expiration], ['ticket_removal', removal]] as const) {
     if (!DURATION.test(value)) problems.push(`${field} "${value}" is not a duration like "30s", "5m" or "1h".`);
   }
-  if (seconds(expiration) < 60) {
+  if (seconds(expiration) < 20) {
     cautions.push(`ticket_expiration ${expiration} is short. Tickets must outlive the queue wait plus server start-up, or players are dropped before the match is ready.`);
   }
 
@@ -98,6 +100,9 @@ export function buildMatchmakerConfig(input: MatchmakerInput) {
       step.beacons = { max_latency: e.max_latency_ms };
     }
     if (Object.keys(step).length === 0) continue;
+    if (e.after_seconds >= seconds(expiration)) {
+      cautions.push(`expansion at ${e.after_seconds}s never applies: tickets expire after ${expiration}. Use an after_seconds below it (e.g. 15 or 20).`);
+    }
     if (e.after_seconds === lastAfter) problems.push(`two expansions share after_seconds ${e.after_seconds}.`);
     lastAfter = e.after_seconds;
     expansions[String(e.after_seconds)] = step;
