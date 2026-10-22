@@ -2,6 +2,10 @@
 
 Published versions of `@edgegap/mcp`, which also run on the hosted endpoint at `mcp.edgegap.dev`. Dates are npm publish dates. Versions merged but never published (0.5.8, 0.6.0, 0.8.0) shipped as part of the next release. Older entries are summarised from the commit history.
 
+## 0.9.1 (2026-10-22)
+
+- Skills pack 0.15.2 (llm-agent-skills `f3fd976`, 21 skills). Every matchmaker template and skill example now uses a 30 s `ticket_expiration` with expansions at or under 20 s, matching the `edgegap_build_matchmaker_config` default since 0.8.0, so the skills no longer tell agents to use 5 minutes.
+
 ## 0.9.0 (2026-10-22)
 
 - New `edgegap_update_skills`: checks whether the Edgegap skills installed in the developer's agent are current, skill by skill, against GitHub main. The local server finds skills CLI installs (user-wide and project), the Claude Code plugin `edgegap@edgegap` and skills copied by hand into `~/.claude/skills`, `~/.agents/skills` and similar folders. With `apply: true` it runs `npx skills update` for the Edgegap skills only or `claude plugin update`, and rewrites hand-copied skills from this release's bundle, keeping files the developer added and refusing symlinks and git checkouts. Refused in read-only mode. On the hosted server it compares the versions an agent passes in `installed_versions`. It never downloads skill text.
