@@ -97,6 +97,8 @@ try {
   await w.rpc('tools/call', { name: 'edgegap_list_apps', arguments: {} });
   await w.rpc('tools/call', { name: 'edgegap_list_deployments', arguments: {} }, { Authorization: 'Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJjbGllbnQifQ.clientsig' });
   await w.rpc('tools/call', { name: 'edgegap_get_registry_credentials', arguments: {} }, { Authorization: `Bearer ${OPAQUE}` });
+  await w.rpc('tools/call', { name: 'edgegap_get_skill', arguments: { skill: 'no-such-skill' } });
+  await w.rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'sentinel-probe', version: '1.0' } });
   await settle();
 
   console.log('\nthe Worker still works');
@@ -133,6 +135,16 @@ try {
   check('client-issued opaque (non-JWT) bearer: auth_problem "foreign"', props(opaque).auth_problem === 'foreign' && props(opaque).has_token === false, JSON.stringify(props(opaque)));
   check('calls with a token carry no auth_problem', withToken.every((e) => !('auth_problem' in props(e))));
   check('prompt reads carry auth_problem too', of('$mcp_prompt_get').some((e) => props(e).auth_problem === 'absent'));
+
+  console.log('\nerror_cause and probe');
+  check('a refused stop: error_cause guardrail_refused', props(stopped).error_cause === 'guardrail_refused', JSON.stringify(props(stopped)));
+  check('no token: error_cause token_absent', props(noHeader).error_cause === 'token_absent', JSON.stringify(props(noHeader)));
+  check('a foreign bearer: error_cause token_foreign', props(foreign).error_cause === 'token_foreign', JSON.stringify(props(foreign)));
+  const badSkill = of('$mcp_tool_call').find((e) => props(e).$mcp_tool_name === 'edgegap_get_skill' && props(e).$mcp_is_error === true);
+  check('an unknown skill: error_cause unknown_skill', props(badSkill).error_cause === 'unknown_skill', JSON.stringify(props(badSkill)));
+  check('successful calls carry no error_cause', !('error_cause' in props(skill)) && !('error_cause' in props(deploy)));
+  check('a scanner client is flagged probe', of('$mcp_initialize').some((e) => props(e).$mcp_client_name === 'sentinel-probe' && props(e).probe === true));
+  check('a real client is not', of('$mcp_initialize').every((e) => props(e).$mcp_client_name === 'sentinel-probe' || !('probe' in props(e))));
 
   console.log('\nprivacy');
   const everything = raws.join('\n');

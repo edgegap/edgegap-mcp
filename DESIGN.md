@@ -175,7 +175,9 @@ lines and out of shell history. The tool is hidden in read-only mode.
 accepts quick-start tokens.** It is `GET /v1/wizard/registry-credentials`, the
 Unity plugin's quick-start call. A regular API token gets 403 "This token is not
 a quick start token" (verified 2026-10-08), so for almost every developer the
-tool cannot fetch credentials. On 403 it returns the manual path instead
+tool cannot fetch credentials. On 403 it returns the manual path instead, as a
+normal result with `status: "manual_steps_required"` rather than an error (it is
+the expected answer for that token type, not a failure to retry)
 (dashboard Container Registry page, or another registry), and it never calls
 `POST /v1/wizard/init-quick-start`, which answers a regular token with a second,
 more confusing 403. Provisioning runs only on a 404, for a quick-start token
