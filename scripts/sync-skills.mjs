@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// Bundles the Edgegap agent skills (github.com/edgegap/edgegap-agent-skills)
+// Bundles the Edgegap agent skills (github.com/edgegap/llm-agent-skills)
 // into src/skills.generated.ts, so the MCP server can serve them.
 //
 //   npm run sync-skills                      # the commit in scripts/skills-pin.txt
 //   npm run sync-skills -- --ref main        # a newer branch, tag or commit; updates the pin
-//   npm run sync-skills -- --from ../edgegap-agent-skills   # a local checkout, no network
+//   npm run sync-skills -- --from ../llm-agent-skills   # a local checkout, no network
 //   npm run check-skills                     # exit 1 if the bundle differs from the pin
 //
 // Only skills/ is bundled: the evals, fixtures and CI scripts are for working
@@ -15,10 +15,10 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 
-const REPO = 'https://github.com/edgegap/edgegap-agent-skills';
+const REPO = 'https://github.com/edgegap/llm-agent-skills';
 const PIN = 'scripts/skills-pin.txt';
 const OUT = 'src/skills.generated.ts';
-const TEXT_EXT = /\.(md|cs|h|cpp|json|ini|xml|txt|yml|yaml|meta|asset|ts|js|mjs|sh|gd|cfg|go)$|(^|\/)(Dockerfile|\.dockerignore|\.funcignore|\.gitattributes|\.gitignore|\.env\.example|go\.mod|go\.sum)$/;
+const TEXT_EXT = /\.(md|cs|h|cpp|json|ini|xml|txt|yml|yaml|meta|asset|ts|js|mjs|sh|gd|cfg|go|html|css)$|(^|\/)(Dockerfile|\.dockerignore|\.funcignore|\.gitattributes|\.gitignore|\.env\.example|go\.mod|go\.sum)$/;
 
 const args = process.argv.slice(2);
 const flag = (name) => {

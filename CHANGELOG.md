@@ -2,6 +2,12 @@
 
 Published versions of `@edgegap/mcp`, which also run on the hosted endpoint at `mcp.edgegap.dev`. Dates are npm publish dates. Versions merged but never published (0.5.8, 0.6.0) shipped as part of the next release. Older entries are summarised from the commit history.
 
+## 0.7.2 (2026-10-22)
+
+- Skills pack 0.15.1 (llm-agent-skills `6bd8353`, 21 skills). Every skill now tags server images and names app versions with the same UTC timestamp, `YYYYMMDD-HHMM` (e.g. `20261022-1430`), instead of `v1`, `v2` or `latest`, so anyone can see when a server was last updated: agent rules, matchmaker templates, build steps, the BR200 and Simple FPS `package.sh` defaults and the Manus GitHub workflow.
+- Includes pack 0.15.0: new skill `edgegap-threejs` for Three.js and other browser games with their own Node.js server, verified with `netcode-sample-threejs-minigames`. The server instructions, `edgegap_get_skill` and `edgegap_list_skills` name it.
+- `sync-skills` accepts `.html` and `.css` files (served as `text/html` and `text/css`) and points to the renamed repository, github.com/edgegap/llm-agent-skills.
+
 ## 0.7.1 (2026-10-21)
 
 - Skills pack 0.14.0 (edgegap-agent-skills `67df139`): new skill `edgegap-playfab` for games that keep PlayFab for players, login and Matchmaking. A rule on `match_found` runs Azure Functions that deploy an Edgegap server near the matched players and hand out the address through read-only player data, verified end to end with `sample-playfab-matchmaker-fishnet`. `edgegap` routes PlayFab to it, and `edgegap-deployments-api`, `edgegap-unity` and `edgegap-fishnet` point to it.
