@@ -18,6 +18,8 @@ import { EdgegapClient } from './client.js';
 import { registerTools, serverInstructions } from './tools.js';
 import { VERSION } from './version.js';
 import { TokenProvider, warnIfTokenInArgv } from './auth.js';
+import { skillsCheckFromEnv } from './skillsversion.js';
+import { defaultSkillsEnv, findSkillsInstalls, replaceFromBundle, updateCommands } from './skillsinstall.js';
 
 async function main(): Promise<void> {
   let config;
@@ -46,7 +48,11 @@ async function main(): Promise<void> {
   const client = new EdgegapClient(config, auth, {
     clientName: () => server.server.getClientVersion()?.name,
   });
-  registerTools(server, client, config, auth);
+  registerTools(server, client, config, auth, {
+    skillsCheck: skillsCheckFromEnv(process.env),
+    // Only this local server looks at the developer's installed skills.
+    localSkills: { env: defaultSkillsEnv(), findSkillsInstalls, updateCommands, replaceFromBundle },
+  });
 
   if (!config.envToken) {
     process.stderr.write(

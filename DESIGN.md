@@ -144,6 +144,22 @@ new instruction or escape into a shell. The Unity template leaves out the `env`
 dump from Edgegap's plugin Dockerfile, which writes hidden environment variables
 into container logs.
 
+**Skill updates never fetch skill text.** `edgegap_list_skills`, `edgegap_get_skill`
+and `edgegap_update_skills` read version numbers from GitHub (the skills repo's
+`plugin.json` and the frontmatter of each `SKILL.md`), and nothing else is
+taken from the response. New skill text reaches an agent only through this
+server's own release, or through the developer's package manager when
+`edgegap_update_skills` runs `npx skills update` or `claude plugin update`
+with `apply: true`. Hand-copied skills are rewritten from the bundle in this
+release, never from the network, so a compromised branch on GitHub cannot
+inject instructions through this server. The request carries no token and no
+project data; `EDGEGAP_SKILLS_CHECK=off` stops it.
+
+**The hosted server never touches the developer's disk.** Finding and updating
+installed skills is local-only: the hosted and self-hosted servers register
+`edgegap_update_skills` without `apply` and compare only the versions the
+agent passes in.
+
 **The same instructions on every transport.** The hosted Worker used to start
 without server instructions, so hosted agents never saw the golden path. All
 three entry points (`src/index.ts`, `src/http.ts`, `worker/worker.ts`) use

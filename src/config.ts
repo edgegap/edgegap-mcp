@@ -83,6 +83,10 @@ function parseIntEnv(raw: string | undefined, fallback: number): number {
 export function loadConfig(
   env: Record<string, string | undefined> = process.env
 ): Config {
+  // The one-click install (manifest.json) fills these from its settings; a
+  // value left as an unexpanded "${user_config.x}" placeholder means not set.
+  env = Object.fromEntries(Object.entries(env).filter(([, v]) => !/^\$\{user_config\.[a-z_]+\}$/.test(v ?? '')));
+
   // A token in the environment is optional. When it is absent the server asks
   // the developer for one at first use, which removes the "configure before
   // anything works" step that loses people during onboarding.

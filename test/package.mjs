@@ -50,5 +50,14 @@ for (const file of ['src/index.ts', 'src/http.ts', 'worker/worker.ts']) {
   check(`${file} reports VERSION, not a hardcoded number`, /name: 'edgegap', version: VERSION/.test(src) && !/version: '\d+\.\d+\.\d+'/.test(src));
 }
 
+// The one-click bundle (manifest.json) names the version and the tools too.
+const manifest = JSON.parse(readFileSync('manifest.json', 'utf8'));
+check(`manifest.json version is ${v}`, manifest.version === v, manifest.version);
+const snapshot = JSON.parse(readFileSync('test/tools.snapshot.json', 'utf8'));
+const listed = manifest.tools.map((t) => t.name).sort().join(',');
+const registered = snapshot.normal.tools.map((t) => t.name).sort().join(',');
+check('manifest.json lists exactly the registered tools', listed === registered, `${listed} vs ${registered}`);
+check('manifest.json runs dist/index.js with the token from its settings', manifest.server?.entry_point === 'dist/index.js' && manifest.server.mcp_config.env.EDGEGAP_API_TOKEN === '${user_config.api_token}' && manifest.user_config.api_token.sensitive === true);
+
 console.log(failures === 0 ? '\nAll checks passed.' : `\n${failures} check(s) FAILED.`);
 process.exit(failures === 0 ? 0 : 1);

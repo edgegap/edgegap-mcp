@@ -23,6 +23,16 @@ import { generateDockerfile, DockerfileInputError } from './dockerfile.js';
 import { buildMatchmakerConfig, DASHBOARD_URL } from './matchmaker.js';
 import { badImage, badTag, looksSecret, TAG_FIX } from './image.js';
 import { SKILLS_PACK, findSkill, findSkillFile, fileIndex, mimeType, skillUri } from './skills.js';
+import {
+  SKILL_NAME_RE,
+  compareVersions,
+  latestPack,
+  latestSkillVersions,
+  servedPackStatus,
+  skillsCheckFromEnv,
+  type SkillsCheckOptions,
+} from './skillsversion.js';
+import type { SkillsEnv, SkillsInstall, InstalledSkill } from './skillsversion.js';
 
 /**
  * The one definition of "dedicated server vs relay" this server gives agents.
@@ -498,11 +508,31 @@ function withHost(result: ToolResult, label: string): ToolResult {
   return { ...result, content: [{ type: 'text', text: `[${label}]` }, ...result.content] };
 }
 
+/**
+ * The local server's access to the skills installed on this machine. Only
+ * src/index.ts passes it, so the hosted Worker never loads node:fs or
+ * node:child_process.
+ */
+export interface LocalSkills {
+  env: SkillsEnv;
+  findSkillsInstalls: (env: SkillsEnv) => Promise<SkillsInstall[]>;
+  updateCommands: (install: SkillsInstall, outdated: string[]) => string[][];
+  replaceFromBundle: (env: SkillsEnv, skill: InstalledSkill) => Promise<string>;
+}
+
+export interface RegisterOptions {
+  /** Where the skills version check reads from. Default: from the environment. */
+  skillsCheck?: SkillsCheckOptions;
+  /** The local stdio server only. */
+  localSkills?: LocalSkills;
+}
+
 export function registerTools(
   server: McpServer,
   client: EdgegapClient,
   config: Config,
-  auth: TokenSource
+  auth: TokenSource,
+  options: RegisterOptions = {}
 ): void {
   const mutating = !config.readOnly;
 
@@ -2262,7 +2292,7 @@ export function registerTools(
       })
   );
 
-  registerSkills(server, tool);
+  registerSkills(server, tool, config, options);
 }
 
 // ==================================================================== skills ====
@@ -2275,7 +2305,15 @@ export function registerTools(
  *   - resources, one per file: for clients that browse or @-mention resources.
  * All three read the same bundle (src/skills.generated.ts). No token, no network.
  */
-function registerSkills(server: McpServer, tool: McpServer['registerTool']): void {
+function registerSkills(
+  server: McpServer,
+  tool: McpServer['registerTool'],
+  config: Config,
+  options: RegisterOptions
+): void {
+  const hosted = config.transport === 'hosted';
+  const check = options.skillsCheck ?? skillsCheckFromEnv(typeof process === 'undefined' ? {} : process.env);
+  const local = hosted ? undefined : options.localSkills;
   const names = SKILLS_PACK.skills.map((s) => s.name);
   const pack = `${SKILLS_PACK.version} (${SKILLS_PACK.commit.slice(0, 7)})`;
   const howToFetch = (skill: string) =>
@@ -2296,14 +2334,16 @@ function registerSkills(server: McpServer, tool: McpServer['registerTool']): voi
         '(edgegap-eos-voice to add voice chat to it), edgegap-fusion-simplefps for the Photon Simple FPS sample, edgegap-godot for Godot 4 with a Godot server, ' +
         'edgegap-colyseus for a Colyseus server, edgegap-nakama for a game with a Nakama backend, edgegap-playfab for a game that keeps PlayFab Matchmaking, ' +
         'edgegap-threejs for a Three.js or other browser game with its own Node.js server, ' +
-        'edgegap-manus for a browser game built with Manus, edgegap for any other engine or platform questions; it routes to the rest. No ' +
-        'API call.',
+        'edgegap-manus for a browser game built with Manus, edgegap for any other engine or platform questions; it routes to the rest. ' +
+        'Also says whether a newer skills pack is on GitHub (reads one version number, no Edgegap API call).',
       inputSchema: {},
-      annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
     },
-    async () =>
-      ok({
+    async () => {
+      const status = servedPackStatus(await latestPack(check), hosted);
+      return ok({
         pack,
+        ...status,
         source: SKILLS_PACK.source,
         skills: SKILLS_PACK.skills.map((s) => ({
           name: s.name,
@@ -2311,8 +2351,12 @@ function registerSkills(server: McpServer, tool: McpServer['registerTool']): voi
           description: s.description,
           files: s.files.length,
         })),
-        next_step: 'Load the skill that matches the project with edgegap_get_skill, then follow it.',
-      })
+        next_step:
+          'Load the skill that matches the project with edgegap_get_skill, then follow it. ' +
+          'If the developer also has Edgegap skills installed in their agent (a skills folder or the Claude Code plugin), ' +
+          'edgegap_update_skills checks whether those copies are current.',
+      });
+    }
   );
 
   tool(
@@ -2351,12 +2395,170 @@ function registerSkills(server: McpServer, tool: McpServer['registerTool']): voi
             skill.files.map((f) => `- ${f.path}`).join('\n')
         );
       }
-      const header = `${skill.name} ${skill.version} · ${found.path} · pack ${pack}`;
+      const status = found.path === 'SKILL.md' ? servedPackStatus(await latestPack(check), hosted) : undefined;
+      const header =
+        `${skill.name} ${skill.version} · ${found.path} · pack ${pack}` +
+        (status?.update ? `\nNote: ${status.update}` : '');
       const others = found.path === 'SKILL.md' ? fileIndex(skill) : [];
       const footer = others.length
         ? `\n\n---\nOther files in this skill:\n${others.map((p) => `- ${p}`).join('\n')}\n\n${howToFetch(skill.name)}`
         : '';
       return { content: [{ type: 'text' as const, text: `${header}\n\n${found.content}${footer}` }] };
+    }
+  );
+
+  tool(
+    'edgegap_update_skills',
+    {
+      title: 'Check and update the installed Edgegap skills',
+      description:
+        'Check whether the Edgegap agent skills installed in the developer\'s agent are the latest, and update them. ' +
+        (hosted
+          ? 'This hosted server cannot see the developer\'s disk: pass installed_versions (each loaded skill\'s ' +
+            'metadata.version from its SKILL.md frontmatter) and it compares them with the latest on GitHub and says how to update. '
+          : 'Finds installs made with the skills CLI (user-wide or this project), the Claude Code plugin edgegap@edgegap, and skills ' +
+            'copied by hand into an agent\'s skills folder, and compares each skill with the latest on GitHub. Without apply it only ' +
+            'checks and changes nothing. With apply=true it runs each outdated install\'s own updater (npx skills update for the Edgegap ' +
+            'skills only, or claude plugin update) and rewrites hand-copied skills from the files bundled in this server; ask the ' +
+            'developer before applying. ') +
+        'Skill text is never downloaded by this tool. The skills served by edgegap_get_skill need no update here.',
+      inputSchema: {
+        ...(local
+          ? {
+              apply: z
+                .boolean()
+                .optional()
+                .describe('Run the updates for outdated installs. Omit or false to only check.'),
+            }
+          : {}),
+        installed_versions: z
+          .record(z.string(), z.string())
+          .optional()
+          .describe(
+            'Skill name → version of skills you have loaded from somewhere this server cannot see, e.g. ' +
+              '{"edgegap-unity": "0.1.8"}. The version is metadata.version in the SKILL.md frontmatter.'
+          ),
+      },
+      annotations: { readOnlyHint: !local, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async (args: { apply?: boolean; installed_versions?: Record<string, string> }) => {
+      const apply = args.apply === true;
+      const given = Object.entries(args.installed_versions ?? {}).filter(([n]) => SKILL_NAME_RE.test(n));
+      const installs = local ? await local.findSkillsInstalls(local.env) : [];
+      const wanted = [...installs.flatMap((i) => i.skills.map((s) => s.name)), ...given.map(([n]) => n)];
+      const [packLatest, latest] = await Promise.all([latestPack(check), latestSkillVersions(wanted, check)]);
+
+      type Row = { name: string; installed: string; latest: string; latest_from: string; status: 'up to date' | 'update available' | 'unknown' };
+      const row = (name: string, installed: string | undefined): Row => {
+        const l = latest[name];
+        const status: Row['status'] =
+          !l?.version || !installed ? 'unknown' : compareVersions(installed, l.version) < 0 ? 'update available' : 'up to date';
+        return {
+          name,
+          installed: installed ?? 'no version in its SKILL.md',
+          latest: l?.version ?? 'unknown (not in the pack)',
+          latest_from: l?.source === 'github' ? 'GitHub main' : l?.source === 'bundled' ? 'this server\'s bundle (GitHub not reachable)' : 'unknown',
+          status,
+        };
+      };
+      const report = installs.map((i) => ({ install: i, rows: i.skills.map((s) => row(s.name, s.version)) }));
+      const outdatedOf = (rows: Row[]) => rows.filter((r) => r.status !== 'up to date').map((r) => r.name);
+
+      const result: Record<string, unknown> = {
+        latest_pack: packLatest.version ?? `unknown: ${packLatest.error}`,
+        installs: report.map(({ install, rows }) => ({ where: install.where, kind: install.kind, skills: rows })),
+      };
+      if (given.length) result.loaded_skills = given.map(([n, v]) => row(n, v));
+
+      const anyOutdated = report.some(({ rows }) => outdatedOf(rows).length) || given.some(([n, v]) => row(n, v).status === 'update available');
+      const howToUpdate =
+        'Reinstall the way they were installed: npx skills add edgegap/llm-agent-skills --skill "*" (add -g for user-wide); ' +
+        'in Claude Code, /plugin marketplace update edgegap then /plugin update edgegap@edgegap; or copy the skills folders from ' +
+        'github.com/edgegap/llm-agent-skills again.';
+
+      if (given.some(([n, v]) => row(n, v).status === 'update available')) result.how_to_update = howToUpdate;
+      if (!local) {
+        result.note = hosted
+          ? 'This hosted server cannot see the developer\'s installed skills; only installed_versions was checked.'
+          : 'This server does not look for installed skills; only installed_versions was checked.';
+        if (anyOutdated) result.how_to_update = howToUpdate;
+        return ok(result);
+      }
+      if (installs.length === 0) {
+        result.found = 'No Edgegap skills installed in this machine\'s agent folders, project or Claude Code plugins.';
+        if (anyOutdated) result.how_to_update = howToUpdate;
+        return ok(result);
+      }
+      if (!anyOutdated) {
+        result.status = 'Every installed Edgegap skill is current.';
+        return ok(result);
+      }
+
+      type Step = { action: string; commands?: string[][]; skill?: InstalledSkill; canCopy?: boolean };
+      const plan: Step[] = report.flatMap(({ install, rows }): Step[] => {
+        const names = outdatedOf(rows);
+        if (!names.length) return [];
+        if (install.kind === 'copy') {
+          return names.map((n) => {
+            const bundled = SKILLS_PACK.skills.find((s) => s.name === n)?.version;
+            const r = rows.find((x) => x.name === n)!;
+            const canCopy = bundled && (r.installed === 'no version in its SKILL.md' || compareVersions(r.installed, bundled) < 0);
+            return {
+              skill: install.skills.find((s) => s.name === n)!,
+              action: canCopy
+                ? `rewrite ${n} in ${install.skills.find((s) => s.name === n)!.dir} from this server's bundle (${bundled})`
+                : `${n}: GitHub has ${r.latest} but this server bundles ${bundled ?? 'nothing newer'}; recopy it from github.com/edgegap/llm-agent-skills`,
+              canCopy: Boolean(canCopy),
+            };
+          });
+        }
+        const commands = local.updateCommands(install, names);
+        return [{ commands, action: commands.map((c) => c.join(' ')).join(' && ') }];
+      });
+
+      if (!apply) {
+        result.would_run = plan.map((p) => p.action);
+        result.next_step = config.readOnly
+          ? 'Read-only mode (EDGEGAP_READ_ONLY): this server will not apply updates. Run the commands above yourself.'
+          : 'Ask the developer, then call edgegap_update_skills again with apply=true to run these.';
+        return ok(result);
+      }
+      if (config.readOnly) {
+        return fail('Read-only mode (EDGEGAP_READ_ONLY) is on, so skills are not updated from here. Call without apply to see the commands to run yourself.');
+      }
+
+      const applied: string[] = [];
+      let failed = false;
+      for (const p of plan) {
+        if (p.commands) {
+          for (const cmd of p.commands) {
+            try {
+              const out = await local.env.run(cmd[0], cmd.slice(1), local.env.cwd);
+              applied.push(`ran: ${cmd.join(' ')}${out ? `\n${out.split('\n').slice(-10).join('\n')}` : ''}`);
+            } catch (err) {
+              failed = true;
+              applied.push(`failed: ${(err as Error).message.split('\n').slice(0, 12).join('\n')}`);
+              break;
+            }
+          }
+        } else if (p.canCopy && p.skill) {
+          try {
+            applied.push(`updated: ${await local.replaceFromBundle(local.env, p.skill)}`);
+          } catch (err) {
+            failed = true;
+            applied.push(`skipped: ${(err as Error).message}`);
+          }
+        } else {
+          applied.push(`not updated: ${p.action}`);
+        }
+      }
+      const after = await local.findSkillsInstalls(local.env);
+      result.applied = applied;
+      result.after = after.map((i) => ({ where: i.where, skills: i.skills.map((s) => row(s.name, s.version)) }));
+      result.reload =
+        'The running agent session keeps the skills it already loaded. Start a new session ' +
+        '(in Claude Code, /reload-plugins also works for the plugin) to use the update.';
+      return failed ? { ...ok(result), isError: true } : ok(result);
     }
   );
 

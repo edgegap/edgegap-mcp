@@ -7,3 +7,5 @@ node_modules/
 .dev.vars
 package.json package-lock.json
 dist/
+.mcpb-stage/
+*.mcpb

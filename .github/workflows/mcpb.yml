@@ -1,0 +1,42 @@
+# Builds the one-click install bundle (edgegap-mcp.mcpb) for every GitHub
+# release and attaches it, so
+# https://github.com/edgegap/llm-mcp-server/releases/latest/download/edgegap-mcp.mcpb
+# always serves the latest. Uses the workflow's own GITHUB_TOKEN; no secrets.
+# Re-run it for an existing tag with workflow_dispatch.
+
+name: MCPB bundle
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build and attach, e.g. v0.9.0
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Check the tag matches the version
+        run: test "v$(node -p "require('./package.json').version")" = "$TAG"
+      - run: npm run bundle
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" edgegap-mcp.mcpb --clobber

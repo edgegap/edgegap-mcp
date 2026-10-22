@@ -14,7 +14,7 @@ function check(label, cond, detail = '') {
 async function connect(env = {}) {
   const c = new Client({ name: 'skills-test', version: '1.0.0' });
   // No EDGEGAP_API_TOKEN: skills must work before any token exists.
-  await c.connect(new StdioClientTransport({ command: 'node', args: ['dist/index.js'], stderr: 'ignore', env: { PATH: process.env.PATH, ...env } }));
+  await c.connect(new StdioClientTransport({ command: 'node', args: ['dist/index.js'], stderr: 'ignore', env: { PATH: process.env.PATH, EDGEGAP_SKILLS_CHECK: 'off', ...env } }));
   return c;
 }
 const body = (r) => r.content.filter((x, i) => !(i === 0 && /^\[[^\]]+\]$/.test(x.text))).map((x) => x.text).join('\n');
