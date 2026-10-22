@@ -198,12 +198,31 @@ const NOT_FOUND = {
   relay: 'no relay session with that session_id. It may already have been deleted.',
 } as const;
 
+/**
+ * What a 403 means, per kind of resource. The API's own text is a bare "You
+ * are not authorized to access this resource", which reads like a bad token
+ * and sends agents to ask for a new one. A rejected token is a 401; a 403 is
+ * a token that works but may not use this feature.
+ */
+const FORBIDDEN = {
+  relay:
+    'the token is valid, but this organization cannot use relays. Relays are not enabled on ' +
+    'every plan or account; check the Relays page in the dashboard (https://app.edgegap.com) ' +
+    'or ask Edgegap support. A new token will not help. Consider a dedicated server ' +
+    '(edgegap_deploy) instead.',
+  generic:
+    'the token is valid, but this organization may not use this feature or resource. It may ' +
+    'not be enabled on the plan, or the resource belongs to another organization. A new token ' +
+    'will not help; check the feature in the dashboard (https://app.edgegap.com) or ask the developer.',
+} as const;
+
 /** Wraps a handler so API errors come back as readable, self-correctable text
  *  rather than a protocol-level exception the agent cannot act on. */
 function guard(
   auth: TokenSource,
   fn: () => Promise<ToolResult>,
-  notFound?: string
+  notFound?: string,
+  forbidden?: string
 ): Promise<ToolResult> {
   const handled = fn().catch((err: unknown): ToolResult => {
     if (err instanceof TokenUnavailableError) {
@@ -212,7 +231,7 @@ function guard(
       return fail(err.message);
     }
     if (err instanceof EdgegapApiError) {
-      const hint = errorHint(err, notFound);
+      const hint = errorHint(err, notFound, forbidden);
       return fail(`${err.message}${hint ? `\n\nLikely cause: ${hint}` : ''}`);
     }
     return fail(redact((err as Error).message ?? String(err), auth.current));
@@ -238,10 +257,10 @@ function guarded(
   notFound: string,
   fn: () => Promise<ToolResult>
 ): Promise<ToolResult> {
-  return guard(auth, fn, notFound);
+  return guard(auth, fn, notFound, notFound === NOT_FOUND.relay ? FORBIDDEN.relay : undefined);
 }
 
-function errorHint(err: EdgegapApiError, notFound?: string): string | undefined {
+function errorHint(err: EdgegapApiError, notFound?: string, forbidden?: string): string | undefined {
   switch (err.status) {
     case 401:
       // Deliberately does not promise a re-prompt: the local server asks again
@@ -258,6 +277,8 @@ function errorHint(err: EdgegapApiError, notFound?: string): string | undefined 
       // Request ID provided", or a generic "could not understand" for logs),
       // not 404. Their only input is the request_id, so a 400 means that.
       return notFound === NOT_FOUND.deployment || notFound === NOT_FOUND.logs ? notFound : undefined;
+    case 403:
+      return forbidden ?? FORBIDDEN.generic;
     case 404:
       // Only the tool knows what was not found; no hint beats a wrong one.
       return notFound;
@@ -296,6 +317,54 @@ function pageInfo(totalCount: number | undefined, returned: number, page: number
 }
 
 /** Trims a deployment status down to what an agent needs to act. */
+/** The last `cap` characters of a deployment's container logs, or undefined
+ *  if there are none or they cannot be read. Never throws. */
+async function logTail(client: EdgegapClient, requestId: string, cap: number): Promise<string | undefined> {
+  try {
+    const res = await client.getDeploymentLogs(requestId);
+    const text = [res.logs, res.crash_logs].filter(Boolean).join('\n');
+    if (!text.trim()) return undefined;
+    return text.length > cap ? `...[truncated]...\n${text.slice(-cap)}` : text;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Stop is idempotent: stopping a deployment that has already stopped, or that
+ * Edgegap no longer knows, leaves nothing running, which is what was asked.
+ * Returns the success payload in that case, or undefined to report the error.
+ * An unknown request_id cannot be told apart from a cleaned-up one (both are a
+ * 400 or 404), so the result says so instead of claiming it was stopped.
+ */
+async function alreadyStopped(client: EdgegapClient, requestId: string, err: unknown) {
+  if (!(err instanceof EdgegapApiError) || ![400, 404, 409, 410].includes(err.status)) return undefined;
+  let status: DeploymentStatus;
+  try {
+    status = await client.getDeployment(requestId);
+  } catch (statusErr) {
+    if (statusErr instanceof EdgegapApiError && [400, 404].includes(statusErr.status)) {
+      return {
+        request_id: requestId,
+        result: 'not_running',
+        note:
+          'Edgegap has no running deployment with this request_id: it already stopped and was ' +
+          'cleaned up, or the request_id is wrong. Nothing is left to stop. If you expected it ' +
+          'to be running, check edgegap_list_deployments.',
+      };
+    }
+    return undefined;
+  }
+  const current = (status.current_status ?? '').toUpperCase();
+  if (status.running && !current.includes('TERMINAT')) return undefined;
+  return {
+    request_id: requestId,
+    result: 'already_stopped',
+    status: status.current_status,
+    note: 'This deployment was already stopped or stopping. Nothing more to do.',
+  };
+}
+
 function compactDeployment(d: DeploymentStatus) {
   const ports = Object.entries(d.ports ?? {}).map(([key, p]) => ({
     name: p.name ?? key,
@@ -1317,11 +1386,17 @@ export function registerTools(
           const status = (last.current_status ?? '').toUpperCase();
 
           if (last.error || TERMINAL_BAD.some((s) => status.includes(s))) {
+            // Fetched now, not left to the agent: a failed deployment is
+            // cleaned up quickly and its logs go with it, so a separate
+            // edgegap_get_deployment_logs call often finds nothing.
+            const logs = await logTail(client, request_id, 3000);
             return fail(
               `Deployment ${request_id} failed with status ${last.current_status}.\n` +
                 `${last.error_detail ?? 'No error detail returned.'}\n\n` +
-                `Call edgegap_get_deployment_logs for container output, then fix the image or ` +
-                `port configuration before redeploying.`
+                (logs
+                  ? `Container output (tail):\n${logs}\n\nFix the image or port configuration before redeploying.`
+                  : `No container logs could be read (the container may never have started, or it ` +
+                    `was already cleaned up). Check the image, tag and ports before redeploying.`)
             );
           }
 
@@ -1336,11 +1411,16 @@ export function registerTools(
           intervalMs = Math.min(intervalMs * 1.5, 10_000);
         }
 
-        return fail(
-          `Deployment ${request_id} did not become ready within ${timeout_seconds ?? 180}s. ` +
-            `Last status: ${last?.current_status ?? 'unknown'}. It may still be starting — ` +
-            `call edgegap_get_deployment to check again, or edgegap_stop_deployment to clean up.`
-        );
+        // Not an error: the wait ran out, the deployment did not fail. It is
+        // usually still starting (large images pull slowly on a cold host).
+        return ok({
+          ...(last ? compactDeployment(last) : { request_id }),
+          ready: false,
+          waited_seconds: Math.round((Date.now() - startedAt) / 1000),
+          next_step:
+            `Not ready within ${timeout_seconds ?? 180}s, and not failed: it may still be starting. ` +
+            `Call edgegap_wait_for_deployment again, or edgegap_stop_deployment if it should not keep running.`,
+        });
       })
   );
 
@@ -1451,7 +1531,14 @@ export function registerTools(
             await dry.client.stopDeployment(request_id);
             return dryRunResult(dry.requests);
           }
-          const res = await client.stopDeployment(request_id);
+          let res;
+          try {
+            res = await client.stopDeployment(request_id);
+          } catch (err) {
+            const gone = await alreadyStopped(client, request_id, err);
+            if (gone) return ok(gone);
+            throw err;
+          }
           return ok({ request_id, result: res.message ?? 'stop requested' });
         })
     );
@@ -1770,7 +1857,7 @@ export function registerTools(
           // missing registry, so it must not trigger provisioning (which only
           // fails with a second, more confusing 403). Only a 404 — a
           // quick-start token whose project is not provisioned yet — does.
-          const unavailable = () => fail(registryCredentialsUnavailable(image_name, tag));
+          const unavailable = () => manualStepsResult(registryCredentialsUnavailable(image_name, tag));
           let creds;
           try {
             creds = await client.getRegistryCredentials();
@@ -2035,7 +2122,7 @@ export function registerTools(
             );
           }
           return ok({ ...compactRelay(last), waited_seconds: Math.round((Date.now() - startedAt) / 1000) });
-        })
+        }, undefined, FORBIDDEN.relay)
     );
   }
 
@@ -2081,7 +2168,7 @@ export function registerTools(
           error: r.error || undefined,
         }));
         return ok({ ...pageInfo(res.total_count, sessions.length, 1), sessions });
-      })
+      }, undefined, FORBIDDEN.relay)
   );
 
   if (mutating) {
@@ -2614,6 +2701,19 @@ function registerSkills(
  * registry login to this token. Written as the manual path that works today,
  * so the agent asks the developer instead of retrying or guessing.
  */
+/**
+ * The registry tool's answer for a regular API token. Not an error: the tool
+ * did what it can for that token type, and the steps are the next action.
+ * Reported as a failure it counted every regular-token developer as a broken
+ * call, and some agents retried it.
+ */
+function manualStepsResult(steps: string): ToolResult {
+  return {
+    content: [{ type: 'text', text: `status: manual_steps_required (no credentials returned)\n\n${steps}` }],
+    structuredContent: { status: 'manual_steps_required', credentials_returned: false, steps },
+  };
+}
+
 function registryCredentialsUnavailable(imageName?: string, tag?: string): string {
   const image = imageName ?? '<image-name>';
   const buildTag = tag ?? '<unique-build-tag>';

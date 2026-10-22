@@ -2,6 +2,17 @@
 
 Published versions of `@edgegap/mcp`, which also run on the hosted endpoint at `mcp.edgegap.dev`. Dates are npm publish dates. Versions merged but never published (0.5.8, 0.6.0, 0.8.0) shipped as part of the next release. Older entries are summarised from the commit history.
 
+## 0.10.0 (2026-10-22)
+
+From a review of the hosted server's PostHog errors: several "errors" were expected answers, and some real ones did not say what to do.
+
+- `edgegap_get_registry_credentials` with a regular API token returns the manual steps as a normal result (`status: "manual_steps_required"`, `credentials_returned: false`), not an error. Every regular-token developer was counted as a failed call, and some agents retried.
+- A 403 now gets an explanation: for relay tools, that the organization cannot use relays (the token is fine, a new one will not help); for any other tool, that the feature or resource is not available to this organization. Before, agents saw only "You are not authorized to access this resource".
+- `edgegap_wait_for_deployment` puts the tail of the container logs in its failure message. A failed deployment is cleaned up quickly, so a separate `edgegap_get_deployment_logs` call often found nothing.
+- `edgegap_wait_for_deployment` running out of time is no longer an error: it returns the deployment with `ready: false` and says to wait again or stop it.
+- `edgegap_stop_deployment` is idempotent as declared: stopping a deployment that is already terminated returns `already_stopped`, and one Edgegap no longer knows returns `not_running` (it says the request_id may be wrong instead of claiming it stopped anything).
+- Hosted analytics: failed calls carry `error_cause`, a fixed label (`token_absent`, `token_foreign`, `api_<status>`, `validation`, `unknown_tool`, `deployment_failed`, `request_timeout`, `network`, `unknown_skill`, `guardrail_refused`, `other`) read from the error text, which is still never sent. Known MCP scanners (`sentinel-probe`, `verifymcp-probe`, `mcp-checkup-prober`) are flagged `probe: true`.
+
 ## 0.9.1 (2026-10-22)
 
 - Skills pack 0.15.2 (llm-agent-skills `f3fd976`, 21 skills). Every matchmaker template and skill example now uses a 30 s `ticket_expiration` with expansions at or under 20 s, matching the `edgegap_build_matchmaker_config` default since 0.8.0, so the skills no longer tell agents to use 5 minutes.

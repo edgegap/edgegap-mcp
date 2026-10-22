@@ -17,6 +17,8 @@ let provisioned = false;
 // API token gets 403 from both (verified against the live API, 2026-10-08).
 let tokenType = 'regular';
 let relayPolls = 0;
+// The relay endpoints answer 403 for an organization without relays (live, 2026-10-22).
+let relayForbidden = false;
 // How many agent-tagged deployments the mock reports as running (the deploy cap).
 let agentRunning = 0;
 // Images in the token's registry project. The API takes the image name only
@@ -104,6 +106,22 @@ const mock = http.createServer((req, res) => {
         return send(200, { name: 'latest-1', docker_tag: 'latest', max_duration: 60 });
       case 'POST /v2/deployments':
         return send(200, { request_id: '7e709a0d8efd' });
+      // A deployment that crashed on start, with its logs still readable.
+      case 'GET /v1/status/faileddep001':
+        return send(200, { request_id: 'faileddep001', current_status: 'Status.ERROR', running: false, error: true, error_detail: 'Container exited with code 139' });
+      case 'GET /v1/deployment/faileddep001/container-logs':
+        return send(200, { logs: 'Loading world...\nSegmentation fault in ServerMain', crash_logs: null });
+      // One that never gets ready within the wait.
+      case 'GET /v1/status/slowdep00001':
+        return send(200, { request_id: 'slowdep00001', current_status: 'Status.DEPLOYING', running: false, error: false });
+      // Stop on a deployment Edgegap already cleaned up, and on one already terminated.
+      case 'DELETE /v1/stop/gonedeploy01':
+      case 'GET /v1/status/gonedeploy01':
+        return send(400, { message: 'Bad Request ID provided' });
+      case 'DELETE /v1/stop/stoppeddep01':
+        return send(400, { message: 'Deployment is already terminated' });
+      case 'GET /v1/status/stoppeddep01':
+        return send(200, { request_id: 'stoppeddep01', current_status: 'Status.TERMINATED', running: false, error: false });
       case 'DELETE /v1/stop/7e709a0d8efd':
         return send(200, { message: 'Deployment stop requested' });
       case 'POST /v1/app':
@@ -157,6 +175,7 @@ const mock = http.createServer((req, res) => {
       case 'DELETE /v1/container-registry/images/my-org-abc123/my-game-server/tags/build-41':
         return send(404, { message: 'not found' });
       case 'GET /v1/relays/sessions':
+        if (relayForbidden) return send(403, { message: 'You are not authorized to access this resource.' });
         return send(200, { sessions: [{ session_id: 'abc123-S', authorization_token: 111, status: 'Linked', ready: true, linked: true, session_users: [{ ip_address: '203.0.113.1', authorization_token: 901 }], relay: { host: 'cc84b011777b.pr.edgegap.net' } }], total_count: 1 });
       case 'POST /v1/relays/sessions:revoke-user':
         return send(200, { session_id: 'abc123-S', authorization_token: 111, status: 'Linked', ready: true, linked: true, session_users: [], relay: { host: 'cc84b011777b.pr.edgegap.net' } });
@@ -297,7 +316,7 @@ console.log('\nregistry');
 calls.length = 0;
 let res = await c.callTool({ name: 'edgegap_get_registry_credentials', arguments: { image_name: 'my-game-server', tag: 'build-42' } });
 let t = text(res);
-check('regular token: reported as an error, not credentials', res.isError === true);
+check('regular token: manual steps, not an error and not credentials', !res.isError && res.structuredContent?.status === 'manual_steps_required' && res.structuredContent?.credentials_returned === false && !res.structuredContent?.token);
 check('regular token: says why (quick-start only) and not to retry', /quick-start token/.test(t) && /Do not retry/.test(t));
 check('regular token: does not attempt provisioning', !calls.some((x) => x.url === '/v1/wizard/init-quick-start'));
 check('regular token: points to the dashboard Container Registry page', /Container Registry page/.test(t));
@@ -471,6 +490,27 @@ res = await c.callTool({ name: 'edgegap_get_deployment', arguments: { request_id
 check('unknown request_id (400): explained as a bad or expired request_id', /no deployment with that request_id/.test(text(res)));
 res = await c.callTool({ name: 'edgegap_get_deployment_logs', arguments: { request_id: 'unknown-id' } });
 check('logs for an unknown request_id (400): same explanation as a stopped one', /Endpoint Storage/.test(text(res)));
+
+// ------------------------------------------------- PostHog error review ----
+console.log('\nerrors that are not failures, and failures that explain themselves');
+res = await c.callTool({ name: 'edgegap_wait_for_deployment', arguments: { request_id: 'faileddep001' } });
+t = text(res);
+check('wait on a failed deployment: an error', res.isError === true);
+check('wait on a failed deployment: includes the log tail', /Segmentation fault in ServerMain/.test(t) && /exited with code 139/.test(t), t.slice(0, 300));
+res = await c.callTool({ name: 'edgegap_wait_for_deployment', arguments: { request_id: 'slowdep00001', timeout_seconds: 5 } });
+r = json(res);
+check('wait timeout: not an error, ready false, says to wait again', !res.isError && r.ready === false && /wait_for_deployment again/.test(r.next_step), text(res).slice(0, 200));
+res = await c.callTool({ name: 'edgegap_stop_deployment', arguments: { request_id: 'stoppeddep01' } });
+r = json(res);
+check('stop an already-terminated deployment: success, already_stopped', !res.isError && r.result === 'already_stopped', text(res).slice(0, 200));
+res = await c.callTool({ name: 'edgegap_stop_deployment', arguments: { request_id: 'gonedeploy01' } });
+r = json(res);
+check('stop a deployment Edgegap no longer knows: success, not_running, does not claim it stopped it', !res.isError && r.result === 'not_running' && /request_id is wrong/.test(r.note), text(res).slice(0, 200));
+relayForbidden = true;
+res = await c.callTool({ name: 'edgegap_list_relay_sessions', arguments: {} });
+t = text(res);
+check('relay 403: explains relays are not enabled, not a bad token', res.isError && /cannot use relays/.test(t) && /new token will not help/i.test(t), t.slice(0, 300));
+relayForbidden = false;
 
 // ------------------------------------------------- WebGL in the generator ----
 console.log('\nWebGL / WebSocket ports');

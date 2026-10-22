@@ -14,7 +14,9 @@
  * which tools were listed, and which skill resource was read. Plus ours: which
  * skill edgegap_get_skill loaded, dry_run, read-only, whether a token was
  * present and, when not, why (auth_problem: "absent" for no header, "foreign"
- * for a bearer the MCP client issued itself), Cloudflare's country code. Skill
+ * for a bearer the MCP client issued itself), Cloudflare's country code, on a
+ * failed call a fixed error_cause label (errorCause below; the text it is read
+ * from is then dropped), and probe: true for known MCP scanners. Skill
  * prompt use is captured separately as $mcp_prompt_get, since the TypeScript
  * SDK does not track prompts.
  *
@@ -87,7 +89,39 @@ const PROPERTIES = new Set([
   '$mcp_listed_tool_names', '$mcp_resource_name',
   // Ours, from eventProperties.
   'read_only', 'has_token', 'auth_problem', 'country', 'skill', 'dry_run', 'prompt',
+  'error_cause', 'probe',
 ]);
+
+/**
+ * Why a call failed, as one fixed label, so errors can be broken down without
+ * sending their text. Read from the error message, which is dropped after.
+ * Order matters: the first match wins.
+ */
+const ERROR_CAUSES: Array<[RegExp, string | ((m: RegExpMatchArray) => string)]> = [
+  [/No Edgegap API token/, 'token_absent'],
+  [/does not contain an Edgegap/, 'token_foreign'],
+  [/Edgegap API (\d{3})/, (m) => `api_${m[1]}`],
+  [/Input validation error|Invalid arguments for tool/, 'validation'],
+  [/Tool \S+ not found/, 'unknown_tool'],
+  [/failed with status/, 'deployment_failed'],
+  [/timed out after \d+ms/, 'request_timeout'],
+  [/Network error calling/, 'network'],
+  [/No skill named|is not a file in the/, 'unknown_skill'],
+  [/Refused|refused|EDGEGAP_[A-Z_]+/, 'guardrail_refused'],
+];
+
+export function errorCause(message: unknown): string {
+  if (typeof message !== 'string' || !message) return 'unknown';
+  for (const [re, label] of ERROR_CAUSES) {
+    const m = message.match(re);
+    if (m) return typeof label === 'string' ? label : label(m);
+  }
+  return 'other';
+}
+
+/** MCP scanners and health-check crawlers seen in PostHog. They call tools
+ *  without a token or with made-up names; flagged so dashboards can drop them. */
+const PROBE_CLIENTS = /^(sentinel-probe|verifymcp-probe|mcp-checkup-prober)$/i;
 
 /** Extra properties when POSTHOG_AGENT_FIELDS is on: the agent-written fields. */
 const AGENT_PROPERTIES = ['$mcp_intent', '$mcp_intent_source', '$mcp_llm_model', '$mcp_llm_model_source', '$mcp_conversation_id'];
@@ -96,10 +130,13 @@ function allowlist(agentFields: boolean): BeforeSendFn {
   const allowed = new Set([...PROPERTIES, ...(agentFields ? AGENT_PROPERTIES : [])]);
   return (event) => {
     if (!EVENTS.has(event.event)) return null;
+    const raw = event.properties ?? {};
     const properties: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(event.properties ?? {})) {
+    for (const [k, v] of Object.entries(raw)) {
       if (allowed.has(k)) properties[k] = v;
     }
+    if (raw.$mcp_is_error === true) properties.error_cause = errorCause(raw.$mcp_error_message);
+    if (typeof raw.$mcp_client_name === 'string' && PROBE_CLIENTS.test(raw.$mcp_client_name)) properties.probe = true;
     // Skill files are public content; any other resource is reported as "other".
     if (typeof properties.$mcp_resource_name === 'string' && !properties.$mcp_resource_name.startsWith('edgegap-skill://')) {
       properties.$mcp_resource_name = 'other';
